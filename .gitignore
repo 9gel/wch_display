@@ -1,0 +1,16 @@
+# Generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.python-version
+/.direnv/
+
+# Virtual environments
+.venv
+
+# Transient files
+/images/
+/vendor/
