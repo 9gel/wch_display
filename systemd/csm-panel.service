@@ -8,6 +8,7 @@ Type=simple
 User=nigel
 Group=dialout
 WorkingDirectory=/home/nigel/code/wch_display
+Environment=PYTHONUNBUFFERED=1
 # Uses the project venv created by `uv sync`. Adjust the path if you install
 # elsewhere. Config is read from ~/.config/csm-panel/config.toml by default.
 ExecStart=/home/nigel/code/wch_display/.venv/bin/csm-panel run
