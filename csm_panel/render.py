@@ -56,11 +56,24 @@ def new_canvas(bg=(12, 14, 20)):
     return img, ImageDraw.Draw(img)
 
 
-def to_panel(portrait_img: Image.Image) -> Image.Image:
-    """Rotate the 480x800 portrait canvas CCW into the 800x480 panel buffer."""
+_ROTATE = {
+    "ccw": Image.ROTATE_90,    # default: confirmed correct on hardware
+    "cw": Image.ROTATE_270,
+    "180": Image.ROTATE_180,
+}
+
+
+def to_panel(portrait_img: Image.Image, rotate: str = "ccw") -> Image.Image:
+    """Map the 480x800 portrait canvas into the 800x480 panel buffer.
+
+    `rotate` selects the mounting orientation (ccw is the verified default).
+    "none" assumes the image is already 800x480.
+    """
+    if rotate == "none":
+        return portrait_img if portrait_img.size == PANEL else portrait_img.resize(PANEL)
     if portrait_img.size != PORTRAIT:
         portrait_img = portrait_img.resize(PORTRAIT)
-    return portrait_img.transpose(Image.ROTATE_90)
+    return portrait_img.transpose(_ROTATE.get(rotate, Image.ROTATE_90))
 
 
 def ring_gauge(draw, cx, cy, r, frac, fg, bg=(38, 42, 52), thickness=22):

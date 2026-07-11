@@ -37,6 +37,43 @@ class Source:
         raise NotImplementedError
 
 
+# metric-selection aliases used in config: friendly name -> key predicate
+def select_metrics(host: "Host", spec) -> "Host":
+    """Return `host` with its metrics filtered/ordered by a config spec list.
+
+    Spec entries: "*" (all), a metric key ("cpu", "mem", "swap", "disk:/",
+    "rx", "tx", "temp:CPU"), or a group ("net"=rx+tx, "temps"=all temp:*,
+    "disk"=all disk:*). Aliases: "ram"->mem.
+    """
+    if not spec or "*" in spec:
+        return host
+    by_key = {m.key: m for m in host.metrics}
+    order = []
+    for entry in spec:
+        e = "mem" if entry == "ram" else entry
+        if e in by_key:
+            order.append(by_key[e])
+        elif e == "net":
+            order += [m for m in host.metrics if m.key in ("rx", "tx")]
+        elif e == "temps":
+            order += [m for m in host.metrics if m.key.startswith("temp:")]
+        elif e == "disk":
+            order += [m for m in host.metrics if m.key.startswith("disk:")]
+        elif e.startswith("temp:"):
+            # allow fuzzy label match, e.g. temp:CPU
+            want = e.split(":", 1)[1].lower()
+            order += [m for m in host.metrics
+                      if m.key.startswith("temp:") and want in m.label.lower()]
+    # de-dup preserving order
+    seen, uniq = set(), []
+    for m in order:
+        if id(m) not in seen:
+            seen.add(id(m))
+            uniq.append(m)
+    host.metrics = uniq
+    return host
+
+
 def _pct_metric(key, label, pct, hist):
     return Metric(key, label, pct, f"{pct:.0f}%", hist, vmin=0, vmax=100, sev=pct / 100)
 

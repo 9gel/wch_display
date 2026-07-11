@@ -1,0 +1,20 @@
+[Unit]
+Description=CSM050H800480 USB panel dashboard
+After=network-online.target beszel-hub.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nigel
+Group=dialout
+WorkingDirectory=/home/nigel/code/wch_display
+# Uses the project venv created by `uv sync`. Adjust the path if you install
+# elsewhere. Config is read from ~/.config/csm-panel/config.toml by default.
+ExecStart=/home/nigel/code/wch_display/.venv/bin/csm-panel run
+Restart=always
+RestartSec=3
+# Panel is a USB device; don't hammer restarts if it is unplugged.
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target

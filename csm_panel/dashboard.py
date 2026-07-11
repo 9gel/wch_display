@@ -120,8 +120,9 @@ def render(hosts, config=None):
     gap = 8
     rows_total = sum(math.ceil(max(1, len(h.metrics)) / cols) for h in hosts)
     avail = H - y0 - 10 - len(hosts) * (title_h + gap)
-    card_h = int(max(56, min(96, avail / max(rows_total, 1) - gap)))
+    card_h = int(max(56, min(150, avail / max(rows_total, 1) - gap)))
     card_w = (W - 2 * M - (cols - 1) * gap) / cols
+    value_size = int(max(22, min(46, card_h * 0.34)))
 
     y = y0
     for host in hosts:
@@ -136,7 +137,7 @@ def render(hosts, config=None):
         for i, m in enumerate(host.metrics):
             cx = M + (i % cols) * (card_w + gap)
             cy = y + (i // cols) * (card_h + gap)
-            _card(d, p, cx, cy, card_w, card_h, m)
+            _card(d, p, cx, cy, card_w, card_h, m, value_size)
         rows = math.ceil(max(1, len(host.metrics)) / cols)
         y += rows * (card_h + gap) + 6
 

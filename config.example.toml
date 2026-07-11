@@ -1,0 +1,42 @@
+# csm-panel configuration.
+# Copy to ~/.config/csm-panel/config.toml (or /etc/csm-panel/config.toml) and edit.
+
+[panel]
+port     = "/dev/ttyACM0"  # the panel's serial device
+interval = 2.0             # seconds between refreshes
+quality  = 88             # JPEG quality (higher = sharper, larger, slower)
+columns  = 2              # metric cards per row
+rotate   = "ccw"          # panel mounting: ccw (default) | cw | 180 | none
+
+# ---------------------------------------------------------------------------
+# Hosts are drawn top-to-bottom. Each host lists the metric cards to show,
+# in order. Omit `metrics` (or use ["*"]) to show everything the source has.
+#
+# Metric keys:  cpu  ram  swap  disk:/  net (=rx+tx)  rx  tx
+#               temps (=all temperatures)  temp:CPU  temp:GPU  temp:NVMe ...
+# ---------------------------------------------------------------------------
+
+# The machine running this service (no configuration needed).
+[[host]]
+name    = "kiosk"
+source  = "local"
+mounts  = ["/"]
+metrics = ["temps", "cpu", "ram", "disk:/", "net"]
+
+# A remote machine, pulled from Beszel (needs the [beszel] section below).
+# [[host]]
+# name    = "fileserver"
+# source  = "beszel"
+# system  = "fileserver"          # the system's name in Beszel (defaults to name)
+# metrics = ["temps", "cpu", "ram"]
+
+# ---------------------------------------------------------------------------
+# Beszel hub connection (only needed for source = "beszel").
+# Use `csm-panel beszel-probe` to see exactly what your hub returns.
+# ---------------------------------------------------------------------------
+# [beszel]
+# url      = "http://127.0.0.1:8090"
+# email    = "you@example.com"
+# password = "your-hub-password"
+# # or, instead of email/password:
+# # token  = "PB_AUTH_TOKEN"
