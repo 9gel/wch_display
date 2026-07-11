@@ -148,7 +148,9 @@ class StubSource(Source):
         self._t += 1
         ms = []
         for i, (label, base) in enumerate(self.sensors):
-            val = base + 5 * math.sin(self._t / 6.0 + i) + random.uniform(-1, 1)
+            # wide swing so sparklines show blue troughs and red peaks clearly
+            val = base + 16 * math.sin(self._t / 7.0 + i) \
+                + 7 * math.sin(self._t / 2.3 + i) + random.uniform(-1.5, 1.5)
             h = self._hist.setdefault(label, [])
             h.append(val)
             del h[:-64]

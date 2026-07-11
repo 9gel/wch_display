@@ -28,7 +28,7 @@ metrics = ["temps"]
 [[host]]
 name    = "server-a"
 source  = "stub"
-sensors = ["CPU=58", "GPU=51", "NVMe=44", "Chipset=49"]
+sensors = ["CPU=74", "GPU=51", "NVMe=44", "Chipset=49"]  # CPU runs hot -> red peaks
 metrics = ["temps"]
 
 [[host]]

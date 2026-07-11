@@ -10,7 +10,7 @@ import time
 from PIL import Image, ImageDraw
 
 from . import render as R
-from .render import temp_color
+from .render import peak_color, temp_color
 
 SS = 2
 BG = (12, 14, 20)
@@ -64,20 +64,21 @@ def _card(d, p, x, y, w, h, m, value_size=26):
     # sparkline area
     sx, sy = x + pad, y + int(value_size * 1.25) + 6
     sw, sh = w - 2 * pad, y + h - sy - 8
+    vals = m.hist or [m.value]
     if m.vmax is not None and m.vmin is not None:
         d.line([sx * SS, sy * SS, (sx + sw) * SS, sy * SS], fill=GRID, width=1)
         d.line([sx * SS, (sy + sh) * SS, (sx + sw) * SS, (sy + sh) * SS], fill=GRID, width=1)
         vmin, vmax = m.vmin, m.vmax
     else:
-        vals0 = m.hist or [m.value]
-        vmin, vmax = min(vals0 + [0]), (max(vals0) or 1)
-    vals = m.hist or [m.value]
-    _sparkline(d, sx, sy, sw, sh, vals, vmin, vmax, col,
-               per_point=(temp_color if m.kind == "temp" else None))
+        vmin, vmax = min(vals + [0]), (max(vals) or 1)
+    # every sparkline: blue at the bottom of its scale, red at the peaks
+    span = (vmax - vmin) or 1.0
+    _sparkline(d, sx, sy, sw, sh, vals, vmin, vmax,
+               lambda v: peak_color((v - vmin) / span))
 
 
-def _sparkline(d, x, y, w, h, values, vmin, vmax, color, per_point=None):
-    """Fixed-scale sparkline. If per_point given, colour segments by value."""
+def _sparkline(d, x, y, w, h, values, vmin, vmax, color_of):
+    """Fixed-scale sparkline; each segment coloured by value via color_of(v)."""
     span = (vmax - vmin) or 1.0
     n = len(values)
     step = w / max(n - 1, 1)
@@ -89,16 +90,12 @@ def _sparkline(d, x, y, w, h, values, vmin, vmax, color, per_point=None):
         pts = [(x, pts[0][1]), (x + w, pts[0][1])]
         values = [values[0], values[0]]
     poly = [(px * SS, py * SS) for px, py in pts]
-    fill = tuple(int(c * 0.30) for c in color)
+    # translucent blue area fill (keeps the "mostly blue" feel)
     d.polygon([(pts[0][0] * SS, (y + h) * SS)] + poly + [(pts[-1][0] * SS, (y + h) * SS)],
-              fill=fill)
-    if len(poly) > 1:
-        if per_point:
-            for i in range(len(poly) - 1):
-                c = per_point(values[i + 1])
-                d.line([poly[i], poly[i + 1]], fill=c, width=2 * SS, joint="curve")
-        else:
-            d.line(poly, fill=color, width=2 * SS, joint="curve")
+              fill=(26, 42, 66))
+    for i in range(len(poly) - 1):
+        d.line([poly[i], poly[i + 1]], fill=color_of(values[i + 1]),
+               width=2 * SS, joint="curve")
 
 
 def render(hosts, config=None):
@@ -122,12 +119,15 @@ def render(hosts, config=None):
 
     y = y0
     for host in hosts:
-        # host title: name left, latest-stats time right (prominent)
-        dot = OK if host.online else CRIT
-        d.ellipse([M * SS, (y + 9) * SS, (M + 13) * SS, (y + 22) * SS], fill=dot)
-        p.text(M + 22, y + 2, host.name[:16], 24, FG)
+        # host title: inverted (light) band so sections are easy to tell apart
+        band_h = 32
+        d.rounded_rectangle([8 * SS, y * SS, (W - 8) * SS, (y + band_h) * SS],
+                            radius=8 * SS, fill=(224, 228, 236))
+        dot = (36, 160, 92) if host.online else (200, 60, 60)
+        d.ellipse([(M) * SS, (y + 11) * SS, (M + 12) * SS, (y + 23) * SS], fill=dot)
+        p.text(M + 20, y + 4, host.name[:16], 22, (22, 26, 34))
         if host.updated:
-            p.text(W - M, y - 2, host.updated, 33, (110, 200, 255), anchor="ra")
+            p.text(W - M, y + 4, host.updated, 22, (36, 84, 168), anchor="ra")
         y += title_h
         # cards grid
         for i, m in enumerate(host.metrics):

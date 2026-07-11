@@ -132,6 +132,15 @@ def temp_color(celsius):
     return _interp_stops(celsius, TEMP_STOPS)
 
 
+# generic sparkline scale: blue (low) -> red (peak), used for every metric
+PEAK_STOPS = [(0.0, (74, 150, 255)), (0.45, (66, 200, 190)), (0.7, (235, 205, 70)),
+              (0.88, (240, 130, 55)), (1.0, (240, 60, 60))]
+
+
+def peak_color(frac):
+    return _interp_stops(max(0.0, min(1.0, frac)), PEAK_STOPS)
+
+
 def grad_color(frac, cold=(70, 200, 120), warm=(240, 190, 60), hot=(235, 80, 80)):
     """Green→amber→red as frac goes 0→1."""
     frac = max(0.0, min(1.0, frac))
