@@ -97,6 +97,28 @@ def hbar(draw, x, y, w, h, frac, fg, bg=(40, 44, 54), radius=4):
         draw.rounded_rectangle([x, y, x + fw, y + h], radius=radius, fill=fg)
 
 
+def _interp_stops(x, stops):
+    """Interpolate an RGB colour from (value, color) stops (ascending)."""
+    if x <= stops[0][0]:
+        return stops[0][1]
+    if x >= stops[-1][0]:
+        return stops[-1][1]
+    for (x0, c0), (x1, c1) in zip(stops, stops[1:]):
+        if x0 <= x <= x1:
+            t = (x - x0) / (x1 - x0)
+            return tuple(int(c0[i] + (c1[i] - c0[i]) * t) for i in range(3))
+    return stops[-1][1]
+
+
+# temperature colour scale: blue (cool) -> red (hot)
+TEMP_STOPS = [(30, (70, 140, 255)), (45, (60, 200, 200)), (58, (90, 210, 120)),
+              (70, (240, 200, 70)), (80, (240, 130, 55)), (90, (240, 55, 55))]
+
+
+def temp_color(celsius):
+    return _interp_stops(celsius, TEMP_STOPS)
+
+
 def grad_color(frac, cold=(70, 200, 120), warm=(240, 190, 60), hot=(235, 80, 80)):
     """Green→amber→red as frac goes 0→1."""
     frac = max(0.0, min(1.0, frac))
