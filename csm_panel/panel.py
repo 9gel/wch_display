@@ -105,6 +105,34 @@ class Panel:
         from .theme import theme_from_images
         return self.send_theme(theme_from_images(images, quality=quality), ack=ack)
 
+    # --- live data push (0x66) : updates widgets WITHOUT resetting ----------
+    @staticmethod
+    def data_frame(values: dict, when=None) -> bytes:
+        """Build a 0x66 value-push frame.
+
+        `values` maps field id (0x02..0x15) -> integer value (0..65535). The
+        panel updates any widget bound to that field, with NO reset (unlike a
+        theme flash). Layout: 66 | len | 01 | datetime(6) | 5-byte header |
+        20 records <id><val BE16> | CRC16-MODBUS(BE).
+        """
+        import time
+        lt = when or time.localtime()
+        b = bytearray([0x66, 0x00, 0x00, 0x01,
+                       lt.tm_year % 100, lt.tm_mon, lt.tm_mday,
+                       lt.tm_hour, lt.tm_min, lt.tm_sec,
+                       0x06, 0x64, 0x01, 0x00, 0x00])
+        for rid in range(0x02, 0x16):
+            v = int(values.get(rid, 0)) & 0xFFFF
+            b += bytes([rid, (v >> 8) & 0xFF, v & 0xFF])
+        b[2] = len(b) + 2
+        b += crc16_modbus(bytes(b)).to_bytes(2, "big")
+        return bytes(b)
+
+    def push_data(self, values: dict):
+        """Send one 0x66 value-push frame (non-resetting live update)."""
+        self._write(self.data_frame(values))
+        self.ser.flush()
+
     # --- raw replay (for validation / debugging) ---------------------------
     def replay_frames(self, frames, delay=0.0):
         """Send a list of raw OUT payloads verbatim (e.g. from a capture)."""
