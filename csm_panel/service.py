@@ -65,17 +65,44 @@ class Service:
         buf = self.frame()
         return self.panel.flash(buf, quality=self.cfg.quality)
 
+    @staticmethod
+    def _signature(hosts):
+        """A coarse fingerprint of the displayed values, to detect real change.
+
+        Each theme flash resets the panel (it writes NAND + reboots to apply),
+        so we only re-flash when the rounded values change — not every tick.
+        Network rates are ignored (too noisy to drive a re-flash).
+        """
+        sig = []
+        for h in hosts:
+            sig.append(h.online)
+            for m in h.metrics:
+                if m.kind == "rate":
+                    continue
+                sig.append(round(m.value))
+        return tuple(sig)
+
     def run(self):
-        print(f"csm-panel: {len(self.cfg.hosts)} host(s), every {self.cfg.interval}s "
-              f"on {self.cfg.port}")
+        print(f"csm-panel: {len(self.cfg.hosts)} host(s), sampling every "
+              f"{self.cfg.interval}s on {self.cfg.port} "
+              f"(re-flash on change; heartbeat {self.cfg.heartbeat}s)")
+        last_sig = None
+        last_flash = 0.0
         while True:
             t0 = time.monotonic()
             try:
-                self._ensure_panel()
-                buf = self.frame()
-                ack = self.panel.flash(buf, quality=self.cfg.quality)
-                if ack != b"C":
-                    print(f"[warn] panel did not ack (got {ack!r})")
+                hosts = self.collect()               # always sample (advances history)
+                sig = self._signature(hosts)
+                now = time.monotonic()
+                if sig != last_sig or (now - last_flash) >= self.cfg.heartbeat:
+                    self._ensure_panel()
+                    img = dashboard.render(hosts, config={"columns": self.cfg.columns})
+                    buf = render.to_panel(img, rotate=self.cfg.rotate)
+                    ack = self.panel.flash(buf, quality=self.cfg.quality)
+                    if ack != b"C":
+                        print(f"[warn] panel did not ack (got {ack!r})")
+                    last_sig = sig
+                    last_flash = time.monotonic()
             except Exception as e:
                 print(f"[error] {type(e).__name__}: {e}; reopening panel")
                 try:

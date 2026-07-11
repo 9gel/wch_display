@@ -3,10 +3,15 @@
 
 [panel]
 port     = "/dev/ttyACM0"  # the panel's serial device
-interval = 2.0             # seconds between refreshes
-quality  = 88             # JPEG quality (higher = sharper, larger, slower)
-columns  = 2              # metric cards per row
-rotate   = "ccw"          # panel mounting: ccw (default) | cw | 180 | none
+# IMPORTANT: this panel RESETS/re-enumerates on every flash (it writes the theme
+# to NAND and reboots to apply). So the service samples often but only re-flashes
+# when the rounded values change, plus a heartbeat. Keep `interval` modest and
+# don't expect smooth per-second animation.
+interval  = 15.0          # seconds between samples / re-flash checks
+heartbeat = 600.0         # force a re-flash at least this often (even if unchanged)
+quality   = 88            # JPEG quality (higher = sharper, larger, slower)
+columns   = 2             # metric cards per row
+rotate    = "ccw"         # panel mounting: ccw (default) | cw | 180 | none
 
 # ---------------------------------------------------------------------------
 # Hosts are drawn top-to-bottom and share the full height. Each host lists the

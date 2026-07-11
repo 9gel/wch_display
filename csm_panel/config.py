@@ -30,7 +30,8 @@ class HostConfig:
 @dataclass
 class Config:
     port: str = "/dev/ttyACM0"
-    interval: float = 2.0
+    interval: float = 15.0           # seconds between samples (history/refresh checks)
+    heartbeat: float = 600.0         # force a re-flash at least this often
     quality: int = 88
     columns: int = 2
     rotate: str = "ccw"              # ccw | cw | 180 | none
@@ -80,7 +81,8 @@ def _parse(path: str) -> Config:
     panel = raw.get("panel", {})
     cfg = Config(
         port=panel.get("port", "/dev/ttyACM0"),
-        interval=float(panel.get("interval", 2.0)),
+        interval=float(panel.get("interval", 15.0)),
+        heartbeat=float(panel.get("heartbeat", 600.0)),
         quality=int(panel.get("quality", 88)),
         columns=int(panel.get("columns", 2)),
         rotate=panel.get("rotate", "ccw"),
