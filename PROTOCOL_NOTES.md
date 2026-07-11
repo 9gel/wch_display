@@ -1,0 +1,71 @@
+# CSM050H800480 panel — serial protocol (reverse-engineered)
+
+Device: `1a86:8040` USB CDC-Serial. `model` query returns
+**`CSM050H800480_14 NAND V0.2.8`** → 5.0″ 800×480, NAND-backed, fw 0.2.8.
+Single WCH MCU (markings filed off) running custom firmware; board
+`HJ-5.0-LCD-V03` / `FUTURE LIFE`. Sold as a 5″ 800×480 USB PC sub-display.
+
+Protocol decoded from USBPcap captures in `captures/` (see `tools/pcap_usb.py`).
+
+## Transport
+- CDC-ACM serial, `/dev/ttyACM0`. 115200 8N1, DTR+RTS asserted (baud is nominal).
+- Host→device on bulk **EP 0x02 (OUT)**; device→host on **EP 0x82 (IN)**.
+- Commands are ASCII-named, NUL-padded to a fixed 64-byte header, optionally
+  followed by a payload. Device acks some commands with a single byte `C` (0x43).
+
+## Commands seen
+| ASCII name | header | payload | reply | meaning |
+|---|---|---|---|---|
+| `model` | 64 B | — | model string (e.g. `CSM050H800480_14 NAND V0.2.8`) | identify |
+| `theme` | 64 B | 4096 B chunk | — | one block of a theme-package upload |
+| `end`   | 64 B | — | `C` | finish theme upload |
+
+### `theme` / `end` header layout (64 bytes)
+```
+[0:6]  "theme\0" or "end\0..."
+[7:9]  block index, 16-bit BIG-endian (0,1,2,… over the upload)
+[9:..] per-upload id / metadata (constant across a given upload)
+rest   zero
+```
+Each `theme` frame carries a 4096-byte slice of the **theme blob**; slices are
+concatenated in block order. `end` closes the transfer; device replies `C`.
+
+### Theme blob layout
+```
+0x000  u32 LE magic = 918 (0x396)           # constant, all themes
+0x040  descriptor:
+        0x40 u8   0x81
+        0x47 u16 BE  width   (0x0320 = 800)   # swapped W/H selects orientation
+        0x49 u16 BE  height  (0x01e0 = 480)
+        0x4c u16     0xf79e  (constant)
+        0x50 u16 BE  data offset = 0x1000
+        0x52 u16 BE  frame count (e.g. 125)
+        0x59.. 3-byte theme id (also echoed in each frame header)
+0x1000 records: repeated [u32 BE jpeg_size][jpeg bytes]  # each 800×480 JPEG
+after  trailing layout/.ui region (on-device text + data-region definitions,
+       separately encoded — NOT needed for full-screen image display)
+```
+Verified: the 125 records in `Flash-animated` match the source `star01_*.jpg`
+files byte-for-byte. A minimal blob of just `magic + zeros` blanks the screen.
+
+**Consequence:** the panel is effectively a **JPEG framebuffer**. We render an
+800×480 image on the host, JPEG-encode it, wrap it in a theme package, and
+upload — full flexibility without touching the vendor's on-device layout system.
+
+## Live-data push (`0x66`) and keepalive (`0x6e`)
+The vendor app, after loading a theme, streams two periodic binary frames on
+EP 0x02:
+- `0x66` "data" frame: `66 00 <len> 01 <YY MM DD HH MM SS> <field records...>`
+  where field records are `<tag><u16 value>` for tags 0x02..0x15 (CPU%, temps,
+  mem, net, clock, …). This updates on-device text/gauge regions defined by the
+  theme. len at byte[2] (e.g. 0x4d = 77).
+- `0x6e` keepalive: e.g. `6e 00 05 1e d0` / `6e 00 0e …` (byte[2]=len).
+
+We drive the panel by **host-rendered full-screen JPEGs** instead, so the
+`0x66` region system is optional (documented here for completeness).
+
+## History / dead-ends (condensed)
+Earlier we mis-identified this as a UsbPCMonitor/Turing/XuanFang "smart screen"
+and decompiled all three vendor apps — none match (`8040` uses none of their
+protocols). The real protocol is the custom `theme`/`model` one above, obtained
+by capturing the panel's own vendor software. Full detail in git history.
