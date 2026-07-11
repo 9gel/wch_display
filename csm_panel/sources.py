@@ -30,6 +30,7 @@ class Host:
     metrics: List[Metric]
     subtitle: str = ""
     online: bool = True
+    updated: str = ""          # "HH:MM:SS" of the latest stats
 
 
 class Source:
@@ -118,8 +119,42 @@ class LocalSource(Source):
             ms.append(Metric(f"temp:{name}", name, val, f"{val:.0f}°", list(h),
                              vmin=30, vmax=90, sev=max(0, min(1, (val - 45) / 40)),
                              kind="temp"))
+        import time
         sub = f"{fmt_bytes(s['memory']['total'])} · {s['ncpu']}c"
-        return [Host(self.name, ms, subtitle=sub)]
+        return [Host(self.name, ms, subtitle=sub, updated=time.strftime("%H:%M:%S"))]
+
+
+class StubSource(Source):
+    """Placeholder host with synthetic temperature data (until Beszel is wired).
+
+    Configure per-host with `sensors = ["CPU=55", "GPU=48", ...]`.
+    """
+
+    def __init__(self, name, sensors=None):
+        self.name = name
+        if not sensors:
+            sensors = ["CPU=54", "GPU=47", "NVMe=41", "Chipset=50"]
+        self.sensors = []
+        for s in sensors:
+            lbl, _, val = str(s).partition("=")
+            self.sensors.append((lbl.strip(), float(val or 45)))
+        self._t = 0
+        self._hist = {}
+
+    def snapshot(self) -> List[Host]:
+        import math
+        import random
+        import time
+        self._t += 1
+        ms = []
+        for i, (label, base) in enumerate(self.sensors):
+            val = base + 5 * math.sin(self._t / 6.0 + i) + random.uniform(-1, 1)
+            h = self._hist.setdefault(label, [])
+            h.append(val)
+            del h[:-64]
+            ms.append(Metric(f"temp:{label}", label, val, f"{val:.0f}°", list(h),
+                             30, 90, max(0, min(1, (val - 45) / 40)), kind="temp"))
+        return [Host(self.name, ms, updated=time.strftime("%H:%M:%S"), online=True)]
 
 
 def _pick(temps, want):

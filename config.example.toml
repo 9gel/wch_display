@@ -9,34 +9,46 @@ columns  = 2              # metric cards per row
 rotate   = "ccw"          # panel mounting: ccw (default) | cw | 180 | none
 
 # ---------------------------------------------------------------------------
-# Hosts are drawn top-to-bottom. Each host lists the metric cards to show,
-# in order. Omit `metrics` (or use ["*"]) to show everything the source has.
+# Hosts are drawn top-to-bottom and share the full height. Each host lists the
+# metric cards to show, in order. The latest-stats time is shown by the name.
 #
 # Metric keys:  cpu  ram  swap  disk:/  net (=rx+tx)  rx  tx
 #               temps (=all temperatures)  temp:CPU  temp:GPU  temp:NVMe ...
 # ---------------------------------------------------------------------------
 
-# The machine running this service (no configuration needed).
+# This machine (real temperatures via /sys). No configuration needed.
 [[host]]
 name    = "kiosk"
 source  = "local"
-mounts  = ["/"]
-metrics = ["temps", "cpu", "ram", "disk:/", "net"]
+metrics = ["temps"]
 
-# A remote machine, pulled from Beszel (needs the [beszel] section below).
-# [[host]]
-# name    = "fileserver"
-# source  = "beszel"
-# system  = "fileserver"          # the system's name in Beszel (defaults to name)
-# metrics = ["temps", "cpu", "ram"]
+# Two more hosts. These are STUBBED with synthetic numbers for now — switch
+# `source` to "beszel" (and fill the [beszel] section) once ready, keeping the
+# same `metrics`. `sensors` sets the placeholder readings.
+[[host]]
+name    = "server-a"
+source  = "stub"
+sensors = ["CPU=58", "GPU=51", "NVMe=44", "Chipset=49"]
+metrics = ["temps"]
+
+[[host]]
+name    = "server-b"
+source  = "stub"
+sensors = ["CPU=45", "GPU=39", "NVMe=42", "Chipset=47"]
+metrics = ["temps"]
 
 # ---------------------------------------------------------------------------
 # Beszel hub connection (only needed for source = "beszel").
 # Use `csm-panel beszel-probe` to see exactly what your hub returns.
 # ---------------------------------------------------------------------------
+# [[host]]
+# name    = "server-a"
+# source  = "beszel"
+# system  = "server-a"            # the system's name in Beszel
+# metrics = ["temps"]
+#
 # [beszel]
 # url      = "http://127.0.0.1:8090"
 # email    = "you@example.com"
 # password = "your-hub-password"
-# # or, instead of email/password:
-# # token  = "PB_AUTH_TOKEN"
+# # or:  token = "PB_AUTH_TOKEN"

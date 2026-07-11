@@ -135,4 +135,9 @@ class BeszelSource(Source):
             ms.append(Metric(f"temp:{name}", name[:12], val, f"{val:.0f}°", th,
                              30, 90, max(0, min(1, (val - 45) / 40)), kind="temp"))
         sub = _g(info, "m", "h", default="") or ""
-        return Host(hc.name, ms, subtitle=str(sub)[:22], online=bool(online))
+        updated = ""
+        if series:
+            created = series[-1].get("updated") or series[-1].get("created") or ""
+            updated = str(created)[11:19]   # ISO -> HH:MM:SS
+        return Host(hc.name, ms, subtitle=str(sub)[:22], online=bool(online),
+                    updated=updated)

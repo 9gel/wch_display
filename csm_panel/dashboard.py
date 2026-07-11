@@ -110,28 +110,24 @@ def render(hosts, config=None):
     p = _P(d)
     M = 16
 
-    # global header: date left, clock right, same baseline
-    p.text(M, 10, time.strftime("%a %d %b"), 20, DIM)
-    p.text(W - M, 8, time.strftime("%H:%M:%S"), 22, (110, 200, 255), anchor="ra")
-    y0 = 40
-
-    # compute adaptive card height so everything fits
-    title_h = 30
+    # compute adaptive card height so everything fills the full height
+    y0 = 8
+    title_h = 40
     gap = 8
     rows_total = sum(math.ceil(max(1, len(h.metrics)) / cols) for h in hosts)
-    avail = H - y0 - 10 - len(hosts) * (title_h + gap)
-    card_h = int(max(56, min(150, avail / max(rows_total, 1) - gap)))
+    avail = H - y0 - 8 - len(hosts) * (title_h + gap)
+    card_h = int(max(56, min(170, avail / max(rows_total, 1) - gap)))
     card_w = (W - 2 * M - (cols - 1) * gap) / cols
-    value_size = int(max(22, min(46, card_h * 0.34)))
+    value_size = int(max(18, min(38, card_h * 0.34 * 0.8)))   # 80% of previous
 
     y = y0
     for host in hosts:
-        # host title
+        # host title: name left, latest-stats time right (prominent)
         dot = OK if host.online else CRIT
-        d.ellipse([M * SS, (y + 8) * SS, (M + 12) * SS, (y + 20) * SS], fill=dot)
-        p.text(M + 20, y, host.name[:20], 24, FG)
-        if host.subtitle:
-            p.text(W - M, y + 4, host.subtitle, 16, DIM, anchor="ra")
+        d.ellipse([M * SS, (y + 9) * SS, (M + 13) * SS, (y + 22) * SS], fill=dot)
+        p.text(M + 22, y + 2, host.name[:16], 24, FG)
+        if host.updated:
+            p.text(W - M, y - 2, host.updated, 33, (110, 200, 255), anchor="ra")
         y += title_h
         # cards grid
         for i, m in enumerate(host.metrics):

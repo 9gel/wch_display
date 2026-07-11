@@ -4,7 +4,7 @@ import time
 from . import dashboard, render
 from .config import Config
 from .panel import Panel
-from .sources import LocalSource, select_metrics
+from .sources import LocalSource, StubSource, select_metrics
 
 
 class Service:
@@ -20,6 +20,9 @@ class Service:
         for i, hc in enumerate(self.cfg.hosts):
             if hc.source == "local":
                 self.local[i] = LocalSource(name=hc.name, mounts=tuple(hc.mounts))
+            elif hc.source == "stub":
+                self.local[i] = StubSource(name=hc.name,
+                                           sensors=hc.options.get("sensors"))
             elif hc.source == "beszel":
                 beszel_hosts.append((i, hc))
         if beszel_hosts:
