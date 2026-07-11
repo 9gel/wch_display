@@ -47,7 +47,8 @@ class Config:
         """
         b = dict(self.beszel)
         for field_name, env in (("password", "CSM_PANEL_BESZEL_PASSWORD"),
-                                ("token", "CSM_PANEL_BESZEL_TOKEN")):
+                                ("token", "CSM_PANEL_BESZEL_TOKEN"),
+                                ("email", "CSM_PANEL_BESZEL_EMAIL")):
             val = os.environ.get(env)
             if not val and b.get(f"{field_name}_command"):
                 import subprocess
