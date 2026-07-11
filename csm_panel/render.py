@@ -24,6 +24,11 @@ def _resolve_path(bold):
     import os
     import subprocess
     path = None
+    # explicit override (set by packaging/service so no fontconfig is needed)
+    env = os.environ.get("CSM_PANEL_FONT_BOLD" if bold else "CSM_PANEL_FONT")
+    if env and os.path.exists(env):
+        _PATH_CACHE[bold] = env
+        return env
     for p in _CANDIDATES[bold]:
         if os.path.exists(p):
             path = p

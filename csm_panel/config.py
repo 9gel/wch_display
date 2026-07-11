@@ -37,6 +37,26 @@ class Config:
     hosts: List[HostConfig] = field(default_factory=list)
     beszel: dict = field(default_factory=dict)   # url, email, password/token
 
+    def resolved_beszel(self) -> dict:
+        """Beszel settings with secrets resolved from env/command.
+
+        Keeps secrets out of the config file (and the nix store): a `password`
+        or `token` may instead come from an environment variable
+        (CSM_PANEL_BESZEL_PASSWORD / CSM_PANEL_BESZEL_TOKEN) or a shell command
+        (`password_command` / `token_command`, e.g. a secret-manager call).
+        """
+        b = dict(self.beszel)
+        for field_name, env in (("password", "CSM_PANEL_BESZEL_PASSWORD"),
+                                ("token", "CSM_PANEL_BESZEL_TOKEN")):
+            val = os.environ.get(env)
+            if not val and b.get(f"{field_name}_command"):
+                import subprocess
+                val = subprocess.run(b[f"{field_name}_command"], shell=True,
+                                     capture_output=True, text=True).stdout.strip()
+            if val:
+                b[field_name] = val
+        return b
+
 
 def _default_config() -> Config:
     import socket

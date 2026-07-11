@@ -1,20 +1,20 @@
+# Reference systemd unit for non-Nix installs. On NixOS use the flake's
+# nixosModule instead (see README). Adjust the ExecStart path and User.
 [Unit]
 Description=CSM050H800480 USB panel dashboard
-After=network-online.target beszel-hub.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=nigel
-Group=dialout
-WorkingDirectory=/home/nigel/code/wch_display
-Environment=PYTHONUNBUFFERED=1
-# Uses the project venv created by `uv sync`. Adjust the path if you install
-# elsewhere. Config is read from ~/.config/csm-panel/config.toml by default.
-ExecStart=/home/nigel/code/wch_display/.venv/bin/csm-panel run
+# Point at wherever `csm-panel` is installed (e.g. a venv or pipx shim).
+ExecStart=/usr/local/bin/csm-panel run
 Restart=always
 RestartSec=3
-# Panel is a USB device; don't hammer restarts if it is unplugged.
+Environment=PYTHONUNBUFFERED=1
+# The panel is a USB serial device; the service user needs access to it
+# (e.g. the dialout group). Optionally load secrets from an env file:
+# EnvironmentFile=-/run/csm-panel/env
 StartLimitIntervalSec=0
 
 [Install]

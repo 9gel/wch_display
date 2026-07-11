@@ -73,7 +73,7 @@ def main(argv=None):
 
 def _beszel_probe(cfg):
     from .beszel import BeszelClient
-    b = cfg.beszel
+    b = cfg.resolved_beszel()
     if not b:
         print("no [beszel] section in config", file=sys.stderr)
         return 1

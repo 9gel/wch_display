@@ -28,7 +28,8 @@ class Service:
         if beszel_hosts:
             from .beszel import BeszelSource
             self._beszel_idx = [i for i, _ in beszel_hosts]
-            self.beszel = BeszelSource([hc for _, hc in beszel_hosts], self.cfg.beszel)
+            self.beszel = BeszelSource([hc for _, hc in beszel_hosts],
+                                       self.cfg.resolved_beszel())
 
     def collect(self):
         """Return Host list in config order, with per-host metric selection."""
