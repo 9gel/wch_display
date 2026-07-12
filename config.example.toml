@@ -2,58 +2,53 @@
 # Copy to ~/.config/csm-panel/config.toml (or /etc/csm-panel/config.toml) and edit.
 
 [panel]
-port     = "/dev/ttyACM0"  # the panel's serial device
-# IMPORTANT: this panel RESETS/re-enumerates on every flash (it writes the theme
-# to NAND and reboots to apply). So the service samples often but only re-flashes
-# when the rounded values change, plus a heartbeat. Keep `interval` modest and
-# don't expect smooth per-second animation.
-interval  = 15.0          # seconds between samples / re-flash checks
-heartbeat = 600.0         # force a re-flash at least this often (even if unchanged)
-quality   = 88            # JPEG quality (higher = sharper, larger, slower)
-columns   = 2             # metric cards per row
-rotate    = "ccw"         # panel mounting: ccw (default) | cw | 180 | none
+port = "/dev/ttyACM0"   # the panel's serial device
 
-# ---------------------------------------------------------------------------
-# Hosts are drawn top-to-bottom and share the full height. Each host lists the
-# metric cards to show, in order. The latest-stats time is shown by the name.
-#
-# Metric keys:  cpu  ram  swap  disk:/  net (=rx+tx)  rx  tx
-#               temps (=all temperatures)  temp:CPU  temp:GPU  temp:NVMe ...
-# ---------------------------------------------------------------------------
+# --- mode ---
+# "widget" (recommended): a no-reset temperature dashboard. The panel RESETS on
+#   every full-frame flash, so widget mode flashes a theme ONCE and then streams
+#   value updates (0x66) with no reset. Shows up to 3 hosts' temperatures as big
+#   numbers (KIOSK/HOMESERVER/NAS panels).
+# "image": renders an arbitrary full-frame dashboard image and re-flashes it on
+#   change. Prettier (sparklines), but each update briefly resets the panel.
+mode = "widget"
 
-# This machine (real temperatures via /sys). No configuration needed.
+# widget mode reuses a captured vendor theme blob for its digit glyphs + upright
+# orientation. Obtain it by USB-capturing the vendor app flashing the "Simplicity"
+# theme rotated upright, then extract the theme blob (see PROTOCOL_NOTES.md /
+# tools/pcap_usb.py) to this path. Use an ABSOLUTE path for a systemd service.
+base_theme = "data/base_theme.bin"
+
+interval = 6.0          # widget: seconds between 0x66 pushes (keep < 30 to stay awake)
+# heartbeat = 600.0     # image mode only: force a re-flash at least this often
+# quality = 88          # image mode JPEG quality
+# columns = 2           # image mode cards per row
+# rotate = "ccw"        # image mode mounting: ccw | cw | 180 | none
+
+# --- hosts (up to 3 in widget mode; drawn top->bottom) ---
+# Each host shows one temperature (a CPU sensor if present, else the hottest).
 [[host]]
-name    = "kiosk"
-source  = "local"
-metrics = ["temps"]
-
-# Two more hosts. These are STUBBED with synthetic numbers for now — switch
-# `source` to "beszel" (and fill the [beszel] section) once ready, keeping the
-# same `metrics`. `sensors` sets the placeholder readings.
-[[host]]
-name    = "server-a"
-source  = "stub"
-sensors = ["CPU=74", "GPU=51", "NVMe=44", "Chipset=49"]  # CPU runs hot -> red peaks
-metrics = ["temps"]
+name = "kiosk"
+source = "local"        # this machine, via /sys sensors
 
 [[host]]
-name    = "server-b"
-source  = "stub"
-sensors = ["CPU=45", "GPU=39", "NVMe=42", "Chipset=47"]
-metrics = ["temps"]
+name = "homeserver"
+source = "beszel"       # from the Beszel hub (needs [beszel] below)
+system = "homeserver"
 
-# ---------------------------------------------------------------------------
-# Beszel hub connection (only needed for source = "beszel").
-# Use `csm-panel beszel-probe` to see exactly what your hub returns.
-# ---------------------------------------------------------------------------
+[[host]]
+name = "nas"
+source = "beszel"
+system = "nas"
+
+# For quick testing without Beszel, use synthetic values:
 # [[host]]
-# name    = "server-a"
-# source  = "beszel"
-# system  = "server-a"            # the system's name in Beszel
-# metrics = ["temps"]
-#
+# name = "server-a"
+# source = "stub"
+# sensors = ["CPU=55"]
+
+# --- Beszel hub (only for source = "beszel"); secrets via env, see README ---
 # [beszel]
-# url      = "http://127.0.0.1:8090"
-# email    = "you@example.com"
-# password = "your-hub-password"
-# # or:  token = "PB_AUTH_TOKEN"
+# url = "http://homeserver:8089"
+# email = "you@example.com"
+# password = "…"    # or token = "…"; better: CSM_PANEL_BESZEL_PASSWORD env
