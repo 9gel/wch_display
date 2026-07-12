@@ -30,11 +30,13 @@ class HostConfig:
 @dataclass
 class Config:
     port: str = "/dev/ttyACM0"
-    interval: float = 15.0           # seconds between samples (history/refresh checks)
-    heartbeat: float = 600.0         # force a re-flash at least this often
+    mode: str = "widget"             # "widget" (no-reset temps) | "image" (full-frame)
+    base_theme: str = "data/base_theme.bin"   # vendor blob reused for widget mode
+    interval: float = 15.0           # widget mode: seconds between 0x66 pushes
+    heartbeat: float = 600.0         # image mode: force a re-flash at least this often
     quality: int = 88
     columns: int = 2
-    rotate: str = "ccw"              # ccw | cw | 180 | none
+    rotate: str = "ccw"              # image mode panel mounting: ccw | cw | 180 | none
     hosts: List[HostConfig] = field(default_factory=list)
     beszel: dict = field(default_factory=dict)   # url, email, password/token
 
@@ -81,6 +83,8 @@ def _parse(path: str) -> Config:
     panel = raw.get("panel", {})
     cfg = Config(
         port=panel.get("port", "/dev/ttyACM0"),
+        mode=panel.get("mode", "widget"),
+        base_theme=panel.get("base_theme", "data/base_theme.bin"),
         interval=float(panel.get("interval", 15.0)),
         heartbeat=float(panel.get("heartbeat", 600.0)),
         quality=int(panel.get("quality", 88)),

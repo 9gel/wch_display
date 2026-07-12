@@ -52,6 +52,29 @@ files byte-for-byte. A minimal blob of just `magic + zeros` blanks the screen.
 800×480 image on the host, JPEG-encode it, wrap it in a theme package, and
 upload — full flexibility without touching the vendor's on-device layout system.
 
+## No-reset live updates (the widget path)
+
+A `theme` flash **re-enumerates/reboots** the panel (writes NAND to apply), so it
+can't be done frequently. The vendor's live path avoids this: flash a *widget*
+theme ONCE, then stream `0x66` value frames — they update on-device widgets
+bound to fields with **no reset**, and also keep the panel awake (it sleeps /
+backlight-off after ~30s without `0x66`; an ENXIO on open just means it's asleep
+or mid-re-enumeration, not bricked).
+
+- **Orientation** is baked into the blob at **byte[1]** (`0x96` is byte[0]):
+  `0x00/0x01/0x03` = upside-down/rotated for this mount, **`0x02` = upright**.
+- **Widget table** @0x80 (64-byte entries): `[0]`=type, `[1]`=id, `[2]`=field id
+  (the `0x66` field it shows), `[4:12]`=x,y,w,h LE16, then per-type data. Types:
+  `0x8b`=big number (color RGB565 @[0x0e]&[0x10]), `0x92`=gauge+number, `0x8e`=
+  curve, `0x93`=static image (`[12:15]` BE24 pointer into the resource area).
+- **Digit glyphs live in a "resource area"** (~35 KB after the background record),
+  so authoring widgets from scratch renders blank. We therefore **reuse a captured
+  vendor theme blob** (`data/base_theme.bin` = the upright "Simplicity" theme,
+  three `0x8b` numbers on fields 3/7/12) and swap only its background JPEG
+  (record0), shifting `0x93` pointers by the size delta. Relabelling the three
+  background panels gives a custom KIOSK/HOMESERVER/NAS temperature display.
+  Implemented in `csm_panel/widget_theme.py`; driven by `service.run_widget()`.
+
 ## Live-data push (`0x66`) and keepalive (`0x6e`)
 The vendor app, after loading a theme, streams two periodic binary frames on
 EP 0x02:

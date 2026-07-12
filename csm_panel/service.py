@@ -57,8 +57,18 @@ class Service:
         return render.to_panel(img, rotate=self.cfg.rotate)
 
     def _ensure_panel(self):
-        if self.panel is None:
-            self.panel = Panel(port=self.cfg.port)
+        if self.panel is not None:
+            return
+        # the panel re-enumerates after a flash and sleeps when idle; retry opens.
+        last = None
+        for _ in range(30):
+            try:
+                self.panel = Panel(port=self.cfg.port)
+                return
+            except Exception as e:
+                last = e
+                time.sleep(1)
+        raise last
 
     def flash_once(self):
         self._ensure_panel()
@@ -82,8 +92,69 @@ class Service:
                 sig.append(round(m.value))
         return tuple(sig)
 
+    # --- no-reset widget mode (temperatures) -------------------------------
+    @staticmethod
+    def _host_temp(host):
+        """Pick the temperature to display for a host (prefer a CPU sensor)."""
+        temps = [m for m in host.metrics if m.kind == "temp"]
+        if not temps:
+            return None
+        for m in temps:
+            if "cpu" in m.label.lower():
+                return m.value
+        return max(m.value for m in temps)
+
     def run(self):
-        print(f"csm-panel: {len(self.cfg.hosts)} host(s), sampling every "
+        if self.cfg.mode == "widget":
+            return self.run_widget()
+        return self.run_image()
+
+    def run_widget(self):
+        """Flash a widget theme ONCE, then stream 0x66 temps forever (no reset)."""
+        import os
+
+        from . import widget_theme as wt
+        base_path = self.cfg.base_theme
+        if not os.path.isabs(base_path):
+            base_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), base_path)
+        base = open(base_path, "rb").read()
+        accents = [(70, 200, 120), (90, 170, 230), (230, 170, 90)]
+
+        print(f"csm-panel [widget]: {len(self.cfg.hosts)} host(s) on {self.cfg.port}, "
+              f"push every {self.cfg.interval}s (flash once, then no-reset 0x66)")
+        flashed_labels = None
+        while True:
+            t0 = time.monotonic()
+            try:
+                hosts = self.collect()
+                labels = tuple(h.name for h in hosts[:3])
+                self._ensure_panel()
+                if labels != flashed_labels:            # (re)flash only if labels change
+                    panels = [(h.name, "online" if h.online else "offline", accents[i])
+                              for i, h in enumerate(hosts[:3])]
+                    theme = wt.build_theme(base, wt.render_background(panels))
+                    ack = self.panel.send_theme(theme)
+                    if ack == b"C":
+                        flashed_labels = labels
+                    time.sleep(6)                       # let it re-enumerate after flash
+                    self.panel = None
+                    self._ensure_panel()
+                temps = [self._host_temp(h) for h in hosts[:3]]
+                self.panel.push_data(wt.temp_values(temps))
+            except Exception as e:
+                print(f"[error] {type(e).__name__}: {e}; reopening panel")
+                try:
+                    if self.panel:
+                        self.panel.close()
+                except Exception:
+                    pass
+                self.panel = None
+                flashed_labels = None
+            dt = time.monotonic() - t0
+            time.sleep(max(0.0, self.cfg.interval - dt))
+
+    def run_image(self):
+        print(f"csm-panel [image]: {len(self.cfg.hosts)} host(s), sampling every "
               f"{self.cfg.interval}s on {self.cfg.port} "
               f"(re-flash on change; heartbeat {self.cfg.heartbeat}s)")
         last_sig = None
