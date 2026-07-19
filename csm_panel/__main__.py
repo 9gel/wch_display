@@ -20,6 +20,13 @@ def main(argv=None):
     p_img = sub.add_parser("image", help="flash an arbitrary image file")
     p_img.add_argument("path")
     sub.add_parser("beszel-probe", help="dump what the Beszel hub returns")
+    p_fw = sub.add_parser("flash-firmware",
+                          help="recover a bricked panel by flashing a boot-mode firmware image")
+    p_fw.add_argument("path", help="the update_*.bin firmware file")
+    p_fw.add_argument("--flash", action="store_true",
+                      help="actually write to the panel (default: dry-run)")
+    p_fw.add_argument("--no-reboot", action="store_true",
+                      help="do not send 'reset' after a successful transfer")
 
     args = ap.parse_args(argv)
     cfg = cfgmod.load(args.config)
@@ -34,6 +41,17 @@ def main(argv=None):
 
     if cmd == "beszel-probe":
         return _beszel_probe(cfg)
+
+    if cmd == "flash-firmware":
+        from . import firmware
+        blob = open(args.path, "rb").read()
+        print(f"firmware {args.path}: {firmware.describe(blob)}")
+        if not args.flash:
+            print("DRY RUN — re-run with --flash to write to the panel.")
+            return 0
+        ok = firmware.flash_firmware(blob, port=cfg.port, reboot=not args.no_reboot)
+        print("done" if ok else "failed")
+        return 0 if ok else 1
 
     if cmd == "preview":
         from .service import Service

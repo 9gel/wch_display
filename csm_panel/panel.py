@@ -73,6 +73,23 @@ class Panel:
         time.sleep(0.1)
         return self.ser.read(64).split(b"\x00")[0].decode("latin1", "replace").strip()
 
+    def send_command(self, name: bytes) -> None:
+        """Send a bare 64-byte control command (name at [0:], rest zero).
+
+        Known bootloader/app commands: b"boot" (slotBootMode -> reboot into the
+        bootloader), b"reset" (slotResetMcu -> reboot / jump to app).
+        """
+        self._write(self._cmd_header(name))
+        self.ser.flush()
+
+    def enter_boot(self):
+        """Ask the running app to reboot into the bootloader."""
+        self.send_command(b"boot")
+
+    def reset_mcu(self):
+        """Reboot the MCU (jump to app after a firmware update / re-validate)."""
+        self.send_command(b"reset")
+
     def send_theme(self, blob: bytes, ack: bool = True) -> bytes:
         """Upload a theme blob. Each frame header carries meta =
         content_length (BE24) + CRC16-MODBUS(content) (BE16); the blob is

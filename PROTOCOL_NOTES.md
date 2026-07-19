@@ -87,6 +87,34 @@ EP 0x02:
 We drive the panel by **host-rendered full-screen JPEGs** instead, so the
 `0x66` region system is optional (documented here for completeness).
 
+## Boot-mode firmware update / recovery
+
+The bootloader (`model` reports `...BOOT V1.6`) accepts a firmware image over the
+same serial link. The vendor "Update" flow (reverse-engineered from
+`5 inch SmartMonitor.exe`) is **identical to the theme upload** except:
+
+* data frames use the command token **`update`** (not `theme`);
+* the stream is terminated by a lone **`end`** header (no data body);
+* the `update_*.bin` is sent **raw** — it is already encrypted and the
+  bootloader decrypts it on-device.
+
+Frame = 64-byte header + 4096-byte chunk (last chunk zero-padded); header
+`[0:6]=name`, `[6:8]=block BE16`, `[8:12]=len BE32` (true size), `[12:14]=CRC16
+BE16` (over the true bytes). Device acks `C` (0x43); `0x15` = NAK/resend. Max
+image 4 MB. Control commands (64-byte name, rest zero): `boot` (app → bootloader,
+`slotBootMode`), `reset` (reboot / jump to app, `slotResetMcu`).
+
+**Recovery:** an invalid hand-authored theme can make the *running app* write a
+bad on-device data table ("MDT"), after which the bootloader refuses to launch
+the app ("MDT Error") — theme writes are ignored in boot mode, so only a firmware
+flash fixes it. With the panel in boot mode:
+
+    csm-panel flash-firmware <update_*.bin> --flash
+
+The correct image for this panel is named **`update_sdnand_800480_*.bin`** (NOT
+`update_S021*` / `update_SM050*`, which are other models); get it from the
+vendor/seller. See `csm_panel/firmware.py`.
+
 ## History / dead-ends (condensed)
 Earlier we mis-identified this as a UsbPCMonitor/Turing/XuanFang "smart screen"
 and decompiled all three vendor apps — none match (`8040` uses none of their
