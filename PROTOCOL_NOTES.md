@@ -115,6 +115,43 @@ The correct image for this panel is named **`update_sdnand_800480_*.bin`** (NOT
 `update_S021*` / `update_SM050*`, which are other models); get it from the
 vendor/seller. See `csm_panel/firmware.py`.
 
+## Theme file format & the `.ui` compiler
+
+The vendor Windows "Theme Editor" saves themes as `*.ui` files and compiles them
+to the blob you flash. Both are reverse-engineered; `csm_panel/theme/` reimplements
+them on Linux.
+
+**`.ui` files** are **RC4-encrypted XML** (key
+`"This product is designed by OuJianbo,zhe ge chan pin shi gzbkey she ji de"`;
+RC4 is symmetric so the same op decrypts and encrypts). XML is `<ui><widgetParent
+background/>` + `<widget type=N>` with `<geometry>` and, for data widgets,
+`<sensor><fastSensor>` (= the `0x66` field id; 0 = static). `.ui` types: 2=StaticText,
+3=ProgressBar, 5=Number, 6=DateTime, 4=Image.
+
+**The blob** (`96 02 00 00` magic; `[1]`=orientation 0x02):
+- descriptor `0x40–0x80`: marker `0x81`; width BE16 @`0x47`, height BE16 @`0x49`;
+  const `f79e` @`0x4c`; background-record flag @`0x50` (`0x10` if a bg JPEG is
+  present); framecount BE32 @`0x54`; content-length BE32 @`0x58`.
+- widget table @`0x80`: 64-byte entries, one per `<widget>` in document order.
+  `[0]`=blob type (StaticText→`0x93`, ProgressBar→`0x8b`, Number→`0x92`,
+  DateTime→`0x8e`, Image→`0x84`); `[1]`=id; `[2]`=field id (== `fastSensor`;
+  DateTime fixed `0x15`); `[3]`=portrait x-band `ui_x//256`; `[4:6]`,`[6:8]`=x,y
+  LE16; `[8:10]`=w LE16; `[10]`=height low byte; `[11]`=per-type flag. Colors are
+  **RGB565 big-endian** in the tail; StaticText carries a BE24 pointer `[12:15]`
+  into the resource area.
+- background JPEG record at `0x1000` (BE32 size + JPEG) when present; then the
+  **resource area** of 8-bpp coverage masks for StaticText/DateTime glyphs.
+
+**Coordinate transform (portrait themes):** the 480×800 canvas is resliced into
+256-px-tall bands packed left-to-right in the panel's landscape framebuffer:
+`bl_x = ui_x%256 + 256*(ui_y//256)`, `bl_y = ui_y%256` (landscape themes are
+identity). This is why the editor's preview isn't pixel-WYSIWYG.
+
+The compiler (`csm_panel/theme/compiler.py`) rebuilds the descriptor + widget
+table from a `.ui` and **reuses a known-good base blob's records + resource area**
+(background JPEG + glyph masks), since pixel-exact glyph synthesis isn't
+implemented. It reproduces a real vendor blob **byte-for-byte**.
+
 ## History / dead-ends (condensed)
 Earlier we mis-identified this as a UsbPCMonitor/Turing/XuanFang "smart screen"
 and decompiled all three vendor apps — none match (`8040` uses none of their

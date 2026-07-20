@@ -2,53 +2,21 @@
 # Copy to ~/.config/csm-panel/config.toml (or /etc/csm-panel/config.toml) and edit.
 
 [panel]
-port = "/dev/ttyACM0"   # the panel's serial device
+port = "/dev/ttyACM0"    # the panel's serial device
 
-# --- mode ---
-# "widget" (recommended): a no-reset temperature dashboard. The panel RESETS on
-#   every full-frame flash, so widget mode flashes a theme ONCE and then streams
-#   value updates (0x66) with no reset. Shows up to 3 hosts' temperatures as big
-#   numbers (KIOSK/HOMESERVER/NAS panels).
-# "image": renders an arbitrary full-frame dashboard image and re-flashes it on
-#   change. Prettier (sparklines), but each update briefly resets the panel.
-mode = "widget"
+# A compiled theme blob to flash ONCE at startup (see `csm-panel ui-compile`).
+# The panel resets on a full-frame flash, so we flash once and then only stream
+# value updates (0x66), which never reset it. Omit to drive whatever theme is
+# already on the panel.
+theme = "theme.bin"
 
-# widget mode reuses a captured vendor theme blob for its digit glyphs + upright
-# orientation. Obtain it by USB-capturing the vendor app flashing the "Simplicity"
-# theme rotated upright, then extract the theme blob (see PROTOCOL_NOTES.md /
-# tools/pcap_usb.py) to this path. Use an ABSOLUTE path for a systemd service.
-base_theme = "data/base_theme.bin"
+interval = 10.0          # seconds between 0x66 pushes (keep < 30 so the panel stays awake)
+brightness = 100         # 0..100
 
-interval = 6.0          # widget: seconds between 0x66 pushes (keep < 30 to stay awake)
-# heartbeat = 600.0     # image mode only: force a re-flash at least this often
-# quality = 88          # image mode JPEG quality
-# columns = 2           # image mode cards per row
-# rotate = "ccw"        # image mode mounting: ccw | cw | 180 | none
-
-# --- hosts (up to 3 in widget mode; drawn top->bottom) ---
-# Each host shows one temperature (a CPU sensor if present, else the hottest).
-[[host]]
-name = "kiosk"
-source = "local"        # this machine, via /sys sensors
-
-[[host]]
-name = "homeserver"
-source = "beszel"       # from the Beszel hub (needs [beszel] below)
-system = "homeserver"
-
-[[host]]
-name = "nas"
-source = "beszel"
-system = "nas"
-
-# For quick testing without Beszel, use synthetic values:
-# [[host]]
-# name = "server-a"
-# source = "stub"
-# sensors = ["CPU=55"]
-
-# --- Beszel hub (only for source = "beszel"); secrets via env, see README ---
-# [beszel]
-# url = "http://homeserver:8089"
-# email = "you@example.com"
-# password = "…"    # or token = "…"; better: CSM_PANEL_BESZEL_PASSWORD env
+# --- provider ---
+# The only data hook. Each interval the service runs this command and expects a
+# JSON object {field_id: value} on stdout, e.g. {"2": 45, "3": 46, ...}. Valid
+# field ids are 2..21 (they map to the widgets you bound in the theme). Where the
+# values come from is entirely up to your provider.
+[provider]
+command = "python examples/provider_stub.py"

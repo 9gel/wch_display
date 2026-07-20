@@ -1,14 +1,17 @@
-"""Configuration loading. TOML-driven so the UI is easy to change without code.
+"""Configuration loading (TOML). See ``config.example.toml`` for the schema.
 
-See config.example.toml for the full annotated schema.
+The service is deliberately data-source agnostic: it flashes a theme blob once,
+then on each interval runs a *provider* command that prints the field values to
+stream to the panel. Where those values come from (local sensors, a monitoring
+hub, an API, …) lives entirely in your provider — never in this repo.
 """
 import os
-from dataclasses import dataclass, field
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import Optional
 
 try:
     import tomllib
-except ModuleNotFoundError:  # pragma: no cover
+except ModuleNotFoundError:  # pragma: no cover  (Python < 3.11)
     tomllib = None
 
 DEFAULT_PATHS = [
@@ -18,90 +21,34 @@ DEFAULT_PATHS = [
 
 
 @dataclass
-class HostConfig:
-    name: str
-    source: str = "local"            # local | beszel
-    metrics: Optional[List[str]] = None   # None/["*"] = all; else ordered keys
-    mounts: List[str] = field(default_factory=lambda: ["/"])
-    system: Optional[str] = None     # beszel: system name (defaults to name)
-    options: dict = field(default_factory=dict)
-
-
-@dataclass
 class Config:
     port: str = "/dev/ttyACM0"
-    mode: str = "widget"             # "widget" (no-reset temps) | "image" (full-frame)
-    base_theme: str = "data/base_theme.bin"   # vendor blob reused for widget mode
-    interval: float = 15.0           # widget mode: seconds between 0x66 pushes
-    heartbeat: float = 600.0         # image mode: force a re-flash at least this often
-    quality: int = 88
-    columns: int = 2
-    rotate: str = "ccw"              # image mode panel mounting: ccw | cw | 180 | none
-    hosts: List[HostConfig] = field(default_factory=list)
-    beszel: dict = field(default_factory=dict)   # url, email, password/token
-
-    def resolved_beszel(self) -> dict:
-        """Beszel settings with secrets resolved from env/command.
-
-        Keeps secrets out of the config file (and the nix store): a `password`
-        or `token` may instead come from an environment variable
-        (CSM_PANEL_BESZEL_PASSWORD / CSM_PANEL_BESZEL_TOKEN) or a shell command
-        (`password_command` / `token_command`, e.g. a secret-manager call).
-        """
-        b = dict(self.beszel)
-        for field_name, env in (("password", "CSM_PANEL_BESZEL_PASSWORD"),
-                                ("token", "CSM_PANEL_BESZEL_TOKEN"),
-                                ("email", "CSM_PANEL_BESZEL_EMAIL")):
-            val = os.environ.get(env)
-            if not val and b.get(f"{field_name}_command"):
-                import subprocess
-                val = subprocess.run(b[f"{field_name}_command"], shell=True,
-                                     capture_output=True, text=True).stdout.strip()
-            if val:
-                b[field_name] = val
-        return b
-
-
-def _default_config() -> Config:
-    import socket
-    return Config(hosts=[HostConfig(name=socket.gethostname(), source="local")])
+    # Theme blob to flash once at startup (a compiled .ui, or a vendor capture).
+    # None: don't flash — drive whatever theme is already on the panel.
+    theme: Optional[str] = None
+    interval: float = 10.0        # seconds between 0x66 pushes (keep < 30 to stay awake)
+    brightness: int = 100         # 0..100
+    # Command whose stdout is JSON {field_id: value} for the fields to update
+    # (valid field ids are 2..21). Run once per interval. None: push nothing.
+    provider: Optional[str] = None
 
 
 def load(path: Optional[str] = None) -> Config:
     paths = [path] if path else DEFAULT_PATHS
-    for pth in paths:
-        if pth and os.path.exists(pth):
-            return _parse(pth)
-    return _default_config()
-
-
-def _parse(path: str) -> Config:
-    if tomllib is None:
-        raise RuntimeError("Python 3.11+ (tomllib) required to read config files")
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
-    panel = raw.get("panel", {})
-    cfg = Config(
+    data = {}
+    for p in paths:
+        if p and os.path.exists(p):
+            if tomllib is None:
+                raise RuntimeError("Python 3.11+ (tomllib) required to read config")
+            with open(p, "rb") as f:
+                data = tomllib.load(f)
+            break
+    panel = data.get("panel", {})
+    prov = data.get("provider", {})
+    return Config(
         port=panel.get("port", "/dev/ttyACM0"),
-        mode=panel.get("mode", "widget"),
-        base_theme=panel.get("base_theme", "data/base_theme.bin"),
-        interval=float(panel.get("interval", 15.0)),
-        heartbeat=float(panel.get("heartbeat", 600.0)),
-        quality=int(panel.get("quality", 88)),
-        columns=int(panel.get("columns", 2)),
-        rotate=panel.get("rotate", "ccw"),
-        beszel=raw.get("beszel", {}),
+        theme=panel.get("theme"),
+        interval=float(panel.get("interval", 10.0)),
+        brightness=int(panel.get("brightness", 100)),
+        provider=prov.get("command"),
     )
-    for h in raw.get("host", []):
-        cfg.hosts.append(HostConfig(
-            name=h["name"],
-            source=h.get("source", "local"),
-            metrics=h.get("metrics"),
-            mounts=h.get("mounts", ["/"]),
-            system=h.get("system"),
-            options={k: v for k, v in h.items()
-                     if k not in ("name", "source", "metrics", "mounts", "system")},
-        ))
-    if not cfg.hosts:
-        cfg.hosts = _default_config().hosts
-    return cfg

@@ -1,172 +1,146 @@
 # csm-panel
 
-Driver and host-metrics dashboard for the **CSM050H800480** 5″ 800×480 USB panel
-(USB id `1a86:8040`, sold as a "PC sub-display / AIDA64 screen", board
-`HJ-5.0-LCD-V03`). The panel's protocol was reverse-engineered from USB captures
-of its Windows software — see [`PROTOCOL_NOTES.md`](PROTOCOL_NOTES.md).
+A Linux driver and toolkit for the **CSM050H800480** 5″ 800×480 USB panel (USB id
+`1a86:8040`, sold as a "PC sub-display / AIDA64 screen", board `HJ-5.0-LCD-V03`).
+The whole protocol — the theme format, the live-update frames, the recovery
+bootloader, and the vendor editor's `.ui` file encryption — was reverse-engineered
+from USB captures and the vendor software. See [`PROTOCOL_NOTES.md`](PROTOCOL_NOTES.md).
 
-The panel is effectively a **JPEG framebuffer**: you render an 800×480 image on
-the host and upload it. This project renders a configurable, glanceable
-dashboard (CPU, RAM, swap/zram, disks, network, temperatures) as sparkline cards
-and pushes it on an interval. Metrics come from pluggable sources — the local
-machine (`/proc`, zero config) and/or a **Beszel** hub for extra hosts.
+It gives you three things, all from Linux with no Windows:
 
-![two hosts](docs/example.png)
+1. **Theme toolkit** — decode/encode the vendor editor's `.ui` files and compile
+   them into the binary the panel flashes.
+2. **A streaming service** — flash a theme once, then push live values to its
+   widgets with the panel's no-reset `0x66` update frame. The service is
+   data-source agnostic: *you* supply a tiny "provider" that prints the numbers.
+3. **Recovery** — reflash the panel's firmware over serial if a bad theme ever
+   bricks it into the bootloader ("MDT Error").
 
 ## Install
 
-Requires Python ≥ 3.11 and [uv](https://docs.astral.sh/uv/). The panel appears
-as `/dev/ttyACM0`; your user must be in the `dialout` group
+The panel enumerates as `/dev/ttyACM0`; your user needs the `dialout` group
 (`sudo usermod -aG dialout $USER`, then re-login).
 
+**With [direnv](https://direnv.net/):** `direnv allow` and the dev environment
+(via `.envrc` → the flake / `uv`) is ready — just `csm-panel …`.
+
+**With [uv](https://docs.astral.sh/uv/):**
+
 ```bash
-uv sync                      # create the venv + install
-uv run csm-panel model       # sanity check -> "CSM050H800480_14 NAND V0.2.8"
+uv sync
+uv run csm-panel model      # sanity check -> "CSM050H800480_14 NAND V0.2.8"
 ```
+
+Only dependency is `pyserial`.
 
 ## Quick start
 
 ```bash
-uv run csm-panel preview out.png   # render a frame to a PNG (no hardware)
-uv run csm-panel once              # render + flash a single frame
-uv run csm-panel run               # run the dashboard service (Ctrl-C to stop)
-uv run csm-panel image photo.jpg   # flash any image file full-screen
+csm-panel model                       # query the panel
+csm-panel push '{"2": 45, "3": 46}'   # push one 0x66 update (field -> value)
+csm-panel flash theme.bin             # flash a compiled theme blob
+csm-panel run -c config.toml          # flash a theme once, then stream (Ctrl-C to stop)
 ```
 
-With no config file it shows the local machine. Point at a config with
-`-c path/to/config.toml`.
+## The provider model
 
-## Configuration
-
-Copy [`config.example.toml`](config.example.toml) to
-`~/.config/csm-panel/config.toml` and edit. Highlights:
+The service knows nothing about *where* your numbers come from. Each interval it
+runs your `[provider] command`, reads a JSON object `{field_id: value}` from its
+stdout, and streams those values to the panel. Field ids are `2..21` (field 1 is
+not addressable by the `0x66` frame).
 
 ```toml
+# config.toml
 [panel]
-interval = 2.0      # refresh seconds
-columns  = 2        # cards per row
-rotate   = "ccw"    # mounting orientation: ccw (default) | cw | 180 | none
+port = "/dev/ttyACM0"
+theme = "theme.bin"      # flashed once at startup (omit to keep the current theme)
+interval = 10.0          # seconds; keep < 30 so the panel stays awake
 
-[[host]]            # hosts stack top-to-bottom
-name    = "kiosk"
-source  = "local"
-metrics = ["temps", "cpu", "ram", "disk:/", "net"]   # order = display order
+[provider]
+command = "python examples/provider_stub.py"
 ```
 
-**Metric keys:** `cpu` `ram` `swap` `disk:/` `net` (=`rx`+`tx`) `rx` `tx`
-`temps` (all sensors) or a specific `temp:CPU` / `temp:GPU` / `temp:NVMe`.
-Omit `metrics` to show everything the source provides.
+`examples/provider_stub.py` emits demo values so you can see it work with zero
+setup. A real provider is just any script that prints the JSON — pull from
+sensors, a monitoring API, a database, whatever you like. See
+[`config.example.toml`](config.example.toml).
 
-### Multiple hosts via Beszel
+## Making a theme
 
-Beszel (already collecting your machines) is used as a data source for remote
-hosts, including history for the sparklines:
+A theme is a layout of widgets (numbers, progress bars, static text, images,
+clock), each optionally bound to a `fastSensor` field id that `0x66` updates. Design
+it in the vendor's Windows "Theme Editor" (it saves a `.ui`), then compile it to a
+flashable blob on Linux:
 
-```toml
-[[host]]
-name    = "fileserver"
-source  = "beszel"
-system  = "fileserver"          # its name in Beszel
-metrics = ["temps", "cpu", "ram"]
-
-[beszel]
-url      = "http://127.0.0.1:8090"
-email    = "you@example.com"
-password = "…"                  # or:  token = "…"
+```bash
+csm-panel ui-decode Mytheme.ui > mytheme.xml        # inspect / hand-edit the XML
+csm-panel ui-compile Mytheme.ui base.bin -o theme.bin
+csm-panel flash theme.bin
 ```
 
-Run `uv run csm-panel beszel-probe` to print exactly what your hub returns (use
-it to adjust field mappings if your Beszel version differs).
+`ui-compile` reuses a **base blob** (a known-good theme of the same
+resolution/orientation, e.g. one you captured flashing a stock theme) for the
+pre-rendered glyph/text resources, and rebuilds the descriptor + widget table
+(types, positions, colors, field bindings) from your `.ui` — byte-exact. The full
+blob format and the portrait↔panel coordinate transform are documented in
+[`PROTOCOL_NOTES.md`](PROTOCOL_NOTES.md); the codec/compiler live in
+`csm_panel/theme/`.
 
-## Run as a service
+## Recovery
 
-### NixOS (flake)
+Flashing a malformed theme can corrupt the panel's data table so the bootloader
+refuses to start the app ("MDT Error"). It's recoverable from Linux with the
+correct firmware image (`update_*.bin`, from the panel vendor):
 
-This repo is a flake exposing `packages.default`, `overlays.default`, and
+```bash
+csm-panel flash-firmware update_*.bin           # dry-run (safe)
+csm-panel flash-firmware update_*.bin --flash    # actually reflash (panel in boot mode)
+```
+
+## Run as a service (NixOS flake)
+
+This repo is a flake exposing `packages.default`, `overlays.default` and
 `nixosModules.default`:
 
 ```nix
 {
-  inputs.csm-panel.url = "github:you/csm-panel";   # or path:/…/csm-panel
-
+  inputs.csm-panel.url = "github:you/wch_display";
   # in your nixosSystem modules:
   imports = [ inputs.csm-panel.nixosModules.default ];
 
   services.csm-panel = {
     enable = true;
     settings = {
-      panel = { port = "/dev/ttyACM0"; interval = 2.0; columns = 2; };
-      host = [
-        { name = "box"; source = "local"; metrics = [ "temps" "cpu" "ram" ]; }
-      ];
+      panel = { port = "/dev/ttyACM0"; theme = "/var/lib/csm-panel/theme.bin"; interval = 10.0; };
+      provider.command = "/etc/csm-panel/provider";
     };
-    # Secrets never go in `settings` (the store is world-readable). Provide them
-    # via an env file (see below):
-    # environmentFile = "-/run/csm-panel/env";
+    # user/group to run unprivileged (needs the dialout group for the port).
+    # environmentFile = "-/run/csm-panel/env";   # secrets for your provider
   };
 }
 ```
 
-The module renders `config.toml` from `settings`, runs `csm-panel run` as a
-systemd service (root by default; set `user`/`group` to run unprivileged with
-serial-device access), and bundles the fonts so no fontconfig is needed.
+The module renders `config.toml` from `settings` and runs `csm-panel run` as a
+systemd service. Your theme blob and provider are yours to supply; keep any
+secrets out of `settings` (the Nix store is world-readable) and pass them to your
+provider via `environmentFile`.
 
-### Secrets (Beszel password/token)
+## Code layout
 
-Keep secrets out of the config file and the Nix store. `csm-panel` resolves a
-Beszel `password`/`token` from, in order:
-
-1. environment: `CSM_PANEL_BESZEL_PASSWORD` / `CSM_PANEL_BESZEL_TOKEN`;
-2. a command in the config: `password_command` / `token_command`
-   (e.g. any secret-manager CLI);
-3. a literal `password` / `token` in the config (discouraged).
-
-For the systemd service, point `environmentFile` at a file (ideally on tmpfs)
-containing `CSM_PANEL_BESZEL_PASSWORD=…`, generated by your secret manager. The
-module doesn't prescribe how you produce it, so any tool works.
-
-### Non-Nix
-
-Install `csm-panel` (e.g. `uv pip install .` or `pipx`), then adapt the
-reference unit [`systemd/csm-panel.service`](systemd/csm-panel.service):
-
-```bash
-systemctl status csm-panel
-journalctl -u csm-panel -f
-```
-
-## Customizing the look
-
-The UI is intentionally easy to change:
-
-- **What's shown & order** — the `metrics` list per host in the config.
-- **Colours / thresholds** — `csm_panel/dashboard.py`
-  (`sev_color`, `ACCENT`) and the temperature scale `TEMP_STOPS` in
-  `csm_panel/render.py`.
-- **Layout** — `dashboard.render()` in `csm_panel/dashboard.py`; every metric is
-  a `Metric` (value + history + fixed scale) drawn by `_card()`.
-- **New data** — add a `Source` subclass (see `csm_panel/sources.py`) that
-  returns `Host`/`Metric`; the renderer needs no changes.
-
-## Layout of the code
-
-| file | purpose |
+| path | purpose |
 |------|---------|
-| `csm_panel/panel.py` | serial driver: `model()`, `flash(image)`, `send_theme()` |
-| `csm_panel/theme.py` | build the panel's theme-package format from JPEGs |
-| `csm_panel/render.py` | portrait canvas, rotation, sparkline/colour helpers |
-| `csm_panel/metrics.py` | `/proc` + `/sys` collectors, history buffer |
-| `csm_panel/sources.py` | normalized `Host`/`Metric` schema + `LocalSource` |
-| `csm_panel/beszel.py` | Beszel hub source (multi-host) |
-| `csm_panel/dashboard.py` | compose hosts → 480×800 dashboard |
-| `csm_panel/service.py` | collect → render → flash loop |
+| `csm_panel/panel.py` | serial driver: `model()`, `send_theme()`, `push_data()` (0x66), `boot`/`reset` |
+| `csm_panel/theme/ui_codec.py` | decode/encode the vendor's RC4 `.ui` files |
+| `csm_panel/theme/compiler.py` | compile a `.ui` → flashable theme blob |
+| `csm_panel/firmware.py` | boot-mode firmware (re)flasher for recovery |
+| `csm_panel/service.py` | flash-once + `0x66` streaming loop (runs your provider) |
+| `examples/provider_stub.py` | reference provider |
 | `tools/pcap_usb.py` | USBPcap decoder used to reverse the protocol |
 
 ## Troubleshooting
 
-- **`could not open /dev/ttyACM0` / `usbfs`** — the USB device is claimed by
-  another process (commonly a VM's USB passthrough). Detach it there so Linux's
-  `cdc_acm` driver binds it.
+- **`could not open /dev/ttyACM0`** — the device is claimed elsewhere (commonly a
+  VM's USB passthrough). Detach it there so Linux's `cdc_acm` binds it.
 - **Permission denied on the port** — add yourself to `dialout` and re-login.
-- **Panel shows "Empty theme" spinner** — an invalid upload; make sure you're on
-  a current build (the theme CRC/length must be correct).
+- **The panel disappears/re-enumerates** — it sleeps after ~30s with no `0x66`;
+  keep `interval < 30`. The service re-opens the port automatically.

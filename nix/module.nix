@@ -1,10 +1,13 @@
-# Generic NixOS module for the csm-panel dashboard service.
+# Generic NixOS module for the csm-panel streaming service.
 #
 #   services.csm-panel = {
 #     enable = true;
-#     settings = { panel.port = "/dev/ttyACM0"; host = [ { name = "box"; source = "local"; } ]; };
-#     # secrets (e.g. a Beszel password) come from an env file, never the store:
-#     environmentFile = "-/run/csm-panel/env";   # CSM_PANEL_BESZEL_PASSWORD=...
+#     settings = {
+#       panel = { port = "/dev/ttyACM0"; theme = "/var/lib/csm-panel/theme.bin"; interval = 10.0; };
+#       provider.command = "/etc/csm-panel/provider";
+#     };
+#     # secrets for your provider come from an env file, never the store:
+#     environmentFile = "-/run/csm-panel/env";
 #   };
 { config, lib, pkgs, csmPanelPackage ? null, ... }:
 let
@@ -30,8 +33,8 @@ in
       default = { };
       example = lib.literalExpression ''
         {
-          panel = { port = "/dev/ttyACM0"; interval = 2.0; columns = 2; };
-          host = [ { name = "box"; source = "local"; metrics = [ "temps" "cpu" "ram" ]; } ];
+          panel = { port = "/dev/ttyACM0"; theme = "/var/lib/csm-panel/theme.bin"; interval = 10.0; };
+          provider.command = "/etc/csm-panel/provider";
         }
       '';
       description = "Contents of config.toml (rendered from this attrset).";
@@ -60,8 +63,8 @@ in
       default = null;
       example = "-/run/csm-panel/env";
       description = ''
-        systemd EnvironmentFile for secrets kept out of the store, e.g.
-        `CSM_PANEL_BESZEL_PASSWORD=...`. Prefix with `-` to make it optional.
+        systemd EnvironmentFile for secrets kept out of the store (passed through
+        to your provider command). Prefix with `-` to make it optional.
       '';
     };
 

@@ -112,16 +112,6 @@ class Panel:
             return self.ser.read(1)
         return b""
 
-    def flash(self, image, quality: int = 80, ack: bool = True) -> bytes:
-        """Render a single 800x480 PIL image to the panel (one static frame)."""
-        from .theme import theme_from_image
-        return self.send_theme(theme_from_image(image, quality=quality), ack=ack)
-
-    def flash_animation(self, images, quality: int = 80, ack: bool = True) -> bytes:
-        """Upload a list of 800x480 PIL images as a looping animation."""
-        from .theme import theme_from_images
-        return self.send_theme(theme_from_images(images, quality=quality), ack=ack)
-
     # --- live data push (0x66) : updates widgets WITHOUT resetting ----------
     @staticmethod
     def data_frame(values: dict, when=None, brightness=100, flags=0x06) -> bytes:

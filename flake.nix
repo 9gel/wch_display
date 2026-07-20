@@ -1,5 +1,5 @@
 {
-  description = "Driver and host-metrics dashboard for the CSM050H800480 (1a86:8040) USB panel";
+  description = "Driver, theme toolkit and 0x66 streaming service for the CSM050H800480 (1a86:8040) USB panel";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -27,7 +27,7 @@
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
-          packages = [ pkgs.uv pkgs.python3 pkgs.dejavu_fonts ];
+          packages = [ pkgs.uv pkgs.python3 ];
         };
       });
     };

@@ -1,11 +1,10 @@
 [project]
 name = "csm-panel"
 version = "0.1.0"
-description = "Driver and host-metrics dashboard for the CSM050H800480 (1a86:8040) USB panel"
+description = "Driver, theme toolkit and 0x66 streaming service for the CSM050H800480 (1a86:8040) USB panel"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "pillow>=10.0",
     "pyserial>=3.5",
 ]
 
