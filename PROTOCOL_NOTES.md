@@ -100,20 +100,31 @@ same serial link. The vendor "Update" flow (reverse-engineered from
 
 Frame = 64-byte header + 4096-byte chunk (last chunk zero-padded); header
 `[0:6]=name`, `[6:8]=block BE16`, `[8:12]=len BE32` (true size), `[12:14]=CRC16
-BE16` (over the true bytes). Device acks `C` (0x43); `0x15` = NAK/resend. Max
-image 4 MB. Control commands (64-byte name, rest zero): `boot` (app → bootloader,
-`slotBootMode`), `reset` (reboot / jump to app, `slotResetMcu`).
+BE16`. Device acks `C` (0x43) **once, after the final `end` frame** (not per
+frame) — so write all frames back-to-back then read one byte; reading per-frame
+stalls tens of seconds and the flaky boot-mode USB re-enumerates mid-transfer.
+Max image 4 MB. Control commands (64-byte name, rest zero): `boot` (app →
+bootloader, `slotBootMode`), `reset` (reboot / jump to app, `slotResetMcu`).
 
-**Recovery:** an invalid hand-authored theme can make the *running app* write a
-bad on-device data table ("MDT"), after which the bootloader refuses to launch
-the app ("MDT Error") — theme writes are ignored in boot mode, so only a firmware
-flash fixes it. With the panel in boot mode:
+**The firmware CRC cannot be computed host-side.** A real vendor capture
+(`Firware_Theme_Flash.pcapng`) shows the `[12:14]` CRC is computed over the
+**decrypted** image (device-side key): capture CRC `0x16a7` matches *no* standard
+CRC16 over the encrypted bytes we transmit (`crc16_modbus`=`0x3a41`, and an
+exhaustive poly/init/reflection sweep finds nothing). Themes are different — their
+CRC *is* `crc16_modbus` over the (plaintext) blob (verified: capture theme CRC
+`0x5a76` == `crc16_modbus(theme)`).
 
-    csm-panel flash-firmware <update_*.bin> --flash
+**Recovery:** an invalid theme can make the *running app* write a bad data table
+("MDT"), after which the bootloader shows "MDT Error" and won't launch the app
+(theme writes are ignored in boot mode; only a firmware flash fixes it). Because
+the firmware CRC can't be recomputed, the reliable Linux recovery is to **replay
+the vendor's own Update frames** captured over USB:
 
-The correct image for this panel is named **`update_sdnand_800480_*.bin`** (NOT
-`update_S021*` / `update_SM050*`, which are other models); get it from the
-vendor/seller. See `csm_panel/firmware.py`.
+    python tools/extract_frames.py Firware_Theme_Flash.pcapng update end > recovery.frames
+    csm-panel flash-firmware --replay recovery.frames --flash    # panel in boot mode
+
+The correct image for this panel is `update_sdnand_800480_*.bin` (NOT `update_S021*`
+/ `update_SM050*`, other models). See `csm_panel/firmware.py`.
 
 ## Theme file format & the `.ui` compiler
 

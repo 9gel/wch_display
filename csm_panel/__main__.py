@@ -22,8 +22,11 @@ def main(argv=None):
     p_flash.add_argument("path")
 
     p_fw = sub.add_parser("flash-firmware",
-                          help="recover a bricked panel by flashing a boot-mode firmware image")
-    p_fw.add_argument("path", help="the update_*.bin firmware file")
+                          help="recover a bricked panel (boot mode). Prefer --replay of captured frames.")
+    p_fw.add_argument("path", nargs="?", help="the update_*.bin firmware file (compute mode)")
+    p_fw.add_argument("--replay", metavar="FRAMES",
+                      help="replay a raw frames blob captured from the vendor's boot-mode Update "
+                           "(the reliable recovery; see tools/extract_frames.py)")
     p_fw.add_argument("--flash", action="store_true",
                       help="actually write to the panel (default: dry-run)")
     p_fw.add_argument("--no-reboot", action="store_true",
@@ -37,6 +40,9 @@ def main(argv=None):
     p_com.add_argument("base", help="a known-good base blob (same resolution) for glyph resources")
     p_com.add_argument("-o", "--output", default="theme.bin")
     p_com.add_argument("--images", help="theme images dir (for a new background JPEG)")
+    p_com.add_argument("--render-text", action="store_true",
+                       help="render StaticText masks + author from scratch "
+                            "(base blob used only for Number/DateTime metrics)")
 
     args = ap.parse_args(argv)
     cfg = cfgmod.load(args.config)
@@ -64,8 +70,21 @@ def main(argv=None):
 
     if cmd == "flash-firmware":
         from . import firmware
+        if args.replay:                       # reliable path: replay captured vendor frames
+            data = open(args.replay, "rb").read()
+            print(f"replay {args.replay}: {len(data)} bytes ({len(data)//4160}+ frames)")
+            if not args.flash:
+                print("DRY RUN — re-run with --flash to write to the panel (in boot mode).")
+                return 0
+            ack = firmware.flash_raw_frames(data, port=cfg.port, reboot=not args.no_reboot)
+            return 0 if ack == b"C" else 1
+        if not args.path:
+            print("give a firmware .bin (compute mode) or --replay FRAMES", file=sys.stderr)
+            return 1
         blob = open(args.path, "rb").read()
         print(f"firmware {args.path}: {firmware.describe(blob)}")
+        print("NOTE: compute mode can't produce the correct firmware CRC (it's over the "
+              "decrypted image); a real device will NAK. Use --replay for recovery.")
         if not args.flash:
             print("DRY RUN — re-run with --flash to write to the panel.")
             return 0
@@ -82,7 +101,17 @@ def main(argv=None):
         from .theme import decode, compile_ui_to_blob
         ui = decode(open(args.ui, "rb").read())
         base = open(args.base, "rb").read()
-        blob = compile_ui_to_blob(ui, args.images, base)
+        if args.render_text:
+            # NOTE: Number/DateTime glyph metrics need a (base_blob, base_ui) pair
+            # to key the metric library by font size; the CLI only has the base
+            # blob, so those metrics are left zero (a warning is emitted). Solid/
+            # image backgrounds and StaticText masks are fully authored.
+            blob = compile_ui_to_blob(ui, args.images, base, render_text=True)
+            from .theme.compiler import last_warnings
+            for wmsg in last_warnings():
+                print("warning:", wmsg, file=sys.stderr)
+        else:
+            blob = compile_ui_to_blob(ui, args.images, base, render_text=False)
         with open(args.output, "wb") as f:
             f.write(blob)
         print(f"wrote {args.output} ({len(blob)} bytes)")
