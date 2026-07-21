@@ -52,6 +52,24 @@ files byte-for-byte. A minimal blob of just `magic + zeros` blanks the screen.
 800×480 image on the host, JPEG-encode it, wrap it in a theme package, and
 upload — full flexibility without touching the vendor's on-device layout system.
 
+**Accepted JPEG flavor (the on-board decoder is minimal and picky):** each record
+must be a **baseline** (never progressive) JPEG with a **JFIF APP0** header, the
+**standard separate DC/AC luma+chroma Huffman tables**, and **4:2:0 or 4:4:4**
+chroma sampling. Anything else decodes to on-screen **noise** even though it flashes
+fine and opens on a PC. In particular **ffmpeg's built-in mjpeg encoder is NOT
+usable** — it omits JFIF, writes a single combined Huffman/quant table, and emits a
+non-standard `1×2` sampling geometry for 4:4:4. Encode with **libjpeg** (Pillow
+`subsampling=0|2, progressive=False`, or ImageMagick `-interlace none
+-sampling-factor 4:2:0`). Use ffmpeg only to *extract* frames to PNG, then encode
+with libjpeg — this is what `tools/video_to_frames.py` does.
+
+**Theme size cap: 4 MiB.** The panel rejects theme blobs larger than ~4 MiB (it
+flashes/acks but shows noise). Backgrounds dominate the size — for an animated
+background (N JPEG records) drop JPEG quality until the total blob fits (a
+mostly-dark starry sky at 480×800 is ~50 KB/frame at q75 vs ~140 KB at q92).
+`Panel.send_theme` raises above 4 MiB; `tools/video_to_frames.py --max-mb` auto-
+lowers quality to a frame-size budget.
+
 ## No-reset live updates (the widget path)
 
 A `theme` flash **re-enumerates/reboots** the panel (writes NAND to apply), so it

@@ -10,6 +10,7 @@ PANEL_W, PANEL_H = 800, 480
 THEME_MAGIC = 918          # u32 LE at blob[0]
 CHUNK = 4096               # payload bytes per 'theme' USB frame
 HEADER = 64                # command header size
+THEME_MAX = 4 * 1024 * 1024  # panel rejects theme blobs larger than 4 MiB
 
 
 def crc16_modbus(data: bytes) -> int:
@@ -96,6 +97,11 @@ class Panel:
         zero-padded to a whole number of 4096-byte chunks for transport.
         """
         content_len = len(blob)
+        if content_len > THEME_MAX:
+            raise ValueError(
+                f"theme blob is {content_len/1024/1024:.2f} MiB; the panel rejects "
+                f"themes larger than {THEME_MAX//1024//1024} MiB (it flashes but shows "
+                f"noise / fails). Shrink the background JPEG(s) — see PROTOCOL_NOTES.md.")
         crc = crc16_modbus(blob)
         meta = content_len.to_bytes(4, "big") + crc.to_bytes(2, "big")
         pad = (-len(blob)) % CHUNK

@@ -44,6 +44,10 @@ def main():
     ap.add_argument("--quality", type=int, default=92, help="JPEG quality 1-100 (default 92)")
     ap.add_argument("--sampling", default="4:2:0", choices=["4:2:0", "4:4:4"],
                     help="chroma subsampling (default 4:2:0; both are panel-safe)")
+    ap.add_argument("--max-mb", type=float, default=3.5, metavar="MB",
+                    help="total-frames size budget in MiB (default 3.5). If the frames "
+                         "exceed it, quality is auto-lowered to fit. The whole theme blob "
+                         "must stay under 4 MiB or the panel rejects it. 0 disables.")
     args = ap.parse_args()
 
     if args.skip < 1:
@@ -69,14 +73,39 @@ def main():
             sys.exit("ffmpeg produced no frames")
 
         # 2) ImageMagick (libjpeg): encode each PNG to a panel-safe baseline JPEG.
-        for i, png in enumerate(pngs):
-            out = os.path.join(args.out, f"{args.prefix}_{i}.jpg")
-            run(["magick", os.path.join(tmp, png),
-                 "-interlace", "none",                 # baseline, never progressive
-                 "-sampling-factor", args.sampling,    # 4:2:0 / 4:4:4 (not ffmpeg's 1x2)
-                 "-quality", str(args.quality), out])
+        def encode_all(quality):
+            total = 0
+            for i, png in enumerate(pngs):
+                out = os.path.join(args.out, f"{args.prefix}_{i}.jpg")
+                run(["magick", os.path.join(tmp, png),
+                     "-interlace", "none",                 # baseline, never progressive
+                     "-sampling-factor", args.sampling,    # 4:2:0 / 4:4:4 (not ffmpeg's 1x2)
+                     "-quality", str(quality), out])
+                total += os.path.getsize(out)
+            return total
+
+        q = args.quality
+        total = encode_all(q)
+        budget = int(args.max_mb * 1024 * 1024) if args.max_mb else 0
+        if budget and total > budget:
+            # binary-search the highest quality (down to a floor) whose total fits
+            lo, hi, best = 20, args.quality - 1, None
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                if encode_all(mid) <= budget:
+                    best = mid; lo = mid + 1
+                else:
+                    hi = mid - 1
+            q = best if best is not None else 20
+            total = encode_all(q)             # leave the chosen quality on disk
+            if best is None:
+                sys.stderr.write(f"warning: even q20 is {total/1024/1024:.2f} MiB "
+                                 f"(> {args.max_mb} MiB budget); reduce --skip or frame size\n")
+
+        mb = total / 1024 / 1024
+        note = f"  [auto-lowered from q{args.quality} to fit {args.max_mb} MiB]" if q != args.quality else ""
         print(f"wrote {len(pngs)} frames: {args.prefix}_0.jpg .. {args.prefix}_{len(pngs)-1}.jpg "
-              f"in {args.out} ({args.sampling}, q{args.quality})")
+              f"in {args.out} ({args.sampling}, q{q}, total {mb:.2f} MiB){note}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
