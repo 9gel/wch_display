@@ -136,8 +136,17 @@ them on Linux.
 `"This product is designed by OuJianbo,zhe ge chan pin shi gzbkey she ji de"`;
 RC4 is symmetric so the same op decrypts and encrypts). XML is `<ui><widgetParent
 background/>` + `<widget type=N>` with `<geometry>` and, for data widgets,
-`<sensor><fastSensor>` (= the `0x66` field id; 0 = static). `.ui` types: 2=StaticText,
-3=ProgressBar, 5=Number, 6=DateTime, 4=Image.
+`<sensor><fastSensor>` (= the `0x66` field id → blob byte `[2]`; 0 = static). `.ui`
+types: 2=StaticText, 3=ProgressBar, 5=Number, 6=DateTime, 4=Image.
+
+The editor's **"数据类型 / value type"** dropdown (`<sensorTypeName>` +
+`<readingName>`) is what sets `<fastSensor>`: picking a *fast* metric assigns a
+non-zero field id, while picking a *named* library reading (e.g. "Disk Total",
+"Core 0 Clock") sets `<fastSensor>0`, moving the widget onto the slow named-sensor
+path — so **for our `0x66`-driven use, every data widget needs a non-zero
+`<fastSensor>`.** (Confirmed by diffing two captures of the same theme where only
+the value-type dropdown changed: the *only* blob delta was byte `[2]` of the
+edited widgets.)
 
 **The blob** (`96 02 00 00` magic; `[1]`=orientation 0x02):
 - descriptor `0x40–0x80`: marker `0x81`; width BE16 @`0x47`, height BE16 @`0x49`;
@@ -152,6 +161,36 @@ background/>` + `<widget type=N>` with `<geometry>` and, for data widgets,
   into the resource area.
 - background JPEG record at `0x1000` (BE32 size + JPEG) when present; then the
   **resource area** of 8-bpp coverage masks for StaticText/DateTime glyphs.
+
+**ProgressBar tail** (`0x8b`, bytes `[12:]`): `[12:14]` bgColor, `[14:16]`
+fgColor, `[16:18]` frameColor (all RGB565 BE), then a u16 at `[18:20]` and again
+at `[26:28]` that is a **constant editor default** (`0x76a0`=30368 / `0xb910`=47376
+depending on editor version) — *not* a per-bar range. It has no effect on fill.
+
+### How a bound widget updates (verified on-panel)
+Byte `[2]` = the `0x66` fast-field id (`== <fastSensor>`; `0` = unbound/static).
+The panel renders the incoming field value **by widget type**:
+- **Number** (`0x92`): shows the value **verbatim** as an integer (no thousands
+  separator — the glyph set is digits + `.`/`-`/`:` only). Any field 2..21 works.
+- **ProgressBar** (`0x8b`): fills **`value` interpreted as a percent 0..100**
+  (clamped) — the fgColor sweeps that fraction of the width. It does **not** use
+  the `[18:20]` "scale". Sending e.g. `30368` renders empty/garbage (overflow);
+  sending `0..100` fills cleanly. Confirmed by a live staircase test and by the
+  vendor `Wakeup-stats` theme, whose CPU-usage bar is bound to field 3 (which its
+  own `0x66` stream carries as `12..61`, i.e. a percentage).
+- **StaticText/DateTime**: masks/glyphs from the resource area (not field-driven,
+  except DateTime's clock).
+
+So a "sparkline" of N history samples is N ProgressBars, each bound to its own
+field, fed the sample **normalised to 0..100** on the host side.
+
+**`0x66` field semantics are fixed by firmware.** In the vendor scheme fields
+2..21 mean specific PC metrics (2=CPU MHz, 3=CPU load %, 10/11=mem MB, 12/13=temps,
+GPU slots 4..9 sit at `0` when absent, …). We ignore those meanings and just treat
+each field as an opaque 16-bit slot bound to our widgets — a Number shows it raw,
+a ProgressBar shows it as a 0..100 %. Field id **1 is not carried** by the `0x66`
+frame (records run 0x02..0x15); some vendor themes bind bars to field 1, which is
+then driven by a different (slow named-sensor) path we don't use.
 
 **Coordinate transform (portrait themes):** the 480×800 canvas is resliced into
 256-px-tall bands packed left-to-right in the panel's landscape framebuffer:
