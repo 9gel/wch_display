@@ -109,6 +109,19 @@ wrap one band (`bl_y += 256`, `bl_w -= 256`). Still unverified:
   apply to non-bars too, or only ProgressBars?).
 - Confirm `x ∈ [256,480)` band-1 widgets for every type.
 
+**NEW open case — per-band vertical offset.** In the SysStatus capture the stored
+band-relative `by` of ProgressBar/Number widgets is **not** the pure
+`ui_to_blob_xy` result: it is shifted up by a per-band amount `(2 - band)*16`
+(band 0 → −32, band 1 → −16, band 2 → 0) for that 480×800 theme, while NeonGrid
+(same resolution, but shorter widgets / no bottom-band image) shows **no** offset.
+The trigger is unclear (leftover `H − 3*256 = 32` distributed across bands? or a
+repack forced by the bottom-band 480×200 image?). Until decoded, the from-scratch
+compiler **copies `[3:11]` geometry for ProgressBar/Number/DateTime from the
+aligned base entry** (StaticText geometry comes from the mask, Image from the
+transform, both verified). So from-scratch currently needs a base whose widget
+layout matches for those field-bound types. Note also byte **`[0x53]` = animation
+frame count** of the largest animated Image (30 in SysStatus, 1 otherwise).
+
 ---
 
 ## Priority 3 — RICH WIDGETS (images, animation, bar styles)
@@ -116,12 +129,19 @@ wrap one band (`bl_y += 256`, `bl_w -= 256`). Still unverified:
 These are **inferred, not byte-confirmed**, and are the visual features most
 likely to be used in polish (and to brick).
 
-**P3a — Image widget (`0x84`).**
-- A **static** `Image` (one PNG/JPEG). How is its pixel data stored — a JPEG
-  record like the background, or raw? How does `[12:15]`/framecount point to it?
-- An **animated** `Image` (a frame sequence with a delay, e.g. the vendor fan:
-  `fan0..7.png`, 30 ms). How are N frames + per-frame delay encoded (record
-  list? framecount `[0x54]`? a delay field)?
+**P3a — Image widget (`0x84`).** RESOLVED (SysStatus capture):
+- Pixel data is **raw** in the resource area (not a JPEG record), pointer at
+  `[12:15]` BE24. **Frame count is byte `[16]`** (1=static, N=animation) and the
+  **static/anim flag is byte `[17]`** (`0x01` static, `0x00` animated); `[15]`=0.
+  (Earlier notes said count`[15]`/flag`[16]` — off by one; corrected.)
+- Frames are stored **consecutively**: opaque source = RGB565 `w*h*2`/frame;
+  transparent PNG = RGB565+8-bit-alpha `w*h*3`/frame. `w,h` = the widget display
+  size (source rescaled). Verified byte-exact on SysStatus: WIDE_PATH 480×200×2×9
+  = 1,728,000; rounded_rect_tall 230×95×3; cyber_status 396×100×3.
+- A folder animation (`wide_path_0.jpg`, `_1`, …) loads all numeric siblings in
+  the folder, sorted. **Per-frame delay** is not in the entry tail (still open;
+  `<imageDelay>` in the .ui, animation speed likely global / undecoded).
+- **Implemented from-scratch** in `compiler.py` (`render_image_resource`).
 
 **P3b — Image-filled ProgressBar.** A ProgressBar using `<bgImagePath>` /
 `<fgImagePath>` (image fill instead of solid color). How is the image ref stored

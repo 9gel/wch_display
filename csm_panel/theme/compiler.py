@@ -11,13 +11,18 @@ panel consumes.  Two authoring modes:
       masks + Number/DateTime glyph-metric tails) verbatim, matched by type+order.
       Reproduces homelab_blob_v2 / base_theme BYTE-FOR-BYTE.
 
-  render_text=True   (from-scratch authoring, NEW)
-      Renders each StaticText (type 2) as an 8-bpp coverage mask with PIL, lays
-      out a fresh resource area, and points every StaticText [12:15] at its mask.
-      Backgrounds are honoured from <widgetParent> (solid color -> descriptor
-      [0x4c]; image -> JPEG record at 0x1000). Number/DateTime glyph-metric tails
-      still come from a base blob's metric LIBRARY keyed by (type, fontSize),
-      because the firmware font cannot be synthesised offline.
+  render_text=True   (from-scratch authoring)
+      Renders each StaticText (type 2) as an 8-bpp coverage mask (Liberation Sans,
+      pixel size round(fontSize*4/3), height = ascent+descent) and each Image
+      (type 4) as raw resource pixels — opaque source -> RGB565 (w*h*2/frame),
+      transparent PNG -> RGB565+8-bit alpha (w*h*3/frame), N frames consecutive
+      for a folder animation. These new resources are APPENDED after the base
+      blob's resource area, and each widget's [12:15] pointer targets them.
+      Number/DateTime digit glyphs (format undecoded) plus their geometry [3:11]
+      and metric tail [12:64] are REUSED verbatim from the base blob's aligned
+      entries; the base resource area is kept intact at its original offsets so
+      those pointers stay valid. Background is honoured from <widgetParent>, or
+      retained from the base when the base supplies the Number resource area.
 
 STATUS OF EACH PIECE (see SPEC.md for the full derivation):
   * descriptor / header .................. CONFIRMED (A,C exact; B consistent)
@@ -104,44 +109,162 @@ def ui_to_blob_xy(ux, uy, uw, portrait):
 # ---------------------------------------------------------------------------
 _FONT_CACHE = {}
 
+# The editor's "Arial" is Liberation Sans (metric-compatible). Verified against
+# fontmatrix_editor.bin: mask height == FreeType ascent+descent at a pixel size
+# of round(fontSize * 4/3) (i.e. points at 96 DPI), matching within 1-2px across
+# sizes 8..48. (See docs/THEME_UNKNOWNS.md.)
+_LIB_SANS = {
+    (0, 0): "LiberationSans-Regular.ttf",
+    (1, 0): "LiberationSans-Bold.ttf",
+    (0, 1): "LiberationSans-Italic.ttf",
+    (1, 1): "LiberationSans-BoldItalic.ttf",
+}
 
-def _find_font(bold):
-    name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+
+def _find_font(bold, italic=0):
+    name = _LIB_SANS[(1 if bold else 0, 1 if italic else 0)]
     hits = sorted(glob.glob(f"/nix/store/*/share/fonts/truetype/{name}"))
     if not hits:
-        # fall back to any DejaVu on the system
-        hits = sorted(glob.glob(f"/**/{name}", recursive=False)) or \
-               sorted(glob.glob(f"/usr/share/fonts/**/{name}", recursive=True))
+        hits = sorted(glob.glob(f"/usr/share/fonts/**/{name}", recursive=True))
     if not hits:
         raise FileNotFoundError(f"could not locate {name} under /nix/store")
     return hits[0]
 
 
-def render_text_mask(text, font_size, bold):
-    """Render `text` to an 8-bpp coverage mask.
+def _pixel_size(font_size):
+    """Editor pixel size = fontSize points at 96 DPI = round(fontSize * 4/3)."""
+    return max(1, round(int(font_size) * 4 / 3))
 
-    Returns (mask_bytes, w, h): mask_bytes is w*h bytes, row-major, one alpha
-    byte per pixel (0=transparent .. 255=opaque), tightly cropped to the inked
-    bounding box. The device colorises this with the entry's fontColor565.
+
+def render_text_mask(text, font_size, bold, italic=0):
+    """Render `text` to an 8-bpp coverage mask (Liberation Sans / editor "Arial").
+
+    Returns (mask_bytes, w, h): mask_bytes is w*h bytes, row-major, one coverage
+    byte per pixel (0=transparent .. 255=opaque). The device colorises this with
+    the entry's fontColor565.
+
+    Sizing (verified against fontmatrix_editor.bin, within 1-2px):
+      pixel size = round(fontSize * 4/3);  mask height = ascent + descent at that
+      pixel size (FreeType getmetrics()); mask width = inked/advance width.
     """
     from PIL import Image, ImageDraw, ImageFont
-    key = (_find_font(bool(bold)), int(font_size))
+    px = _pixel_size(font_size)
+    key = (_find_font(bool(bold), bool(italic)), px)
     font = _FONT_CACHE.get(key)
     if font is None:
-        font = ImageFont.truetype(key[0], key[1])
+        font = ImageFont.truetype(key[0], px)
         _FONT_CACHE[key] = font
     if not text:
         return b"", 0, 0
-    # oversize canvas, draw white text on black, then crop to ink bbox
-    tmp = Image.new("L", (max(4, len(text) * font_size * 2 + 8), font_size * 3 + 8), 0)
-    d = ImageDraw.Draw(tmp)
-    d.text((4, 4), text, fill=255, font=font)
-    bbox = tmp.getbbox()
-    if bbox is None:
+    asc, desc = font.getmetrics()
+    h = asc + desc                              # font-driven mask height
+    # advance width of the string (inked width can be narrower, but the editor's
+    # box tracks the pen advance); draw white text on black at the ascent line.
+    try:
+        w = int(round(font.getlength(text)))
+    except AttributeError:                       # very old PIL
+        w = font.getbbox(text)[2]
+    if w <= 0:
         return b"", 0, 0
-    crop = tmp.crop(bbox)
-    w, h = crop.size
-    return crop.tobytes(), w, h
+    tmp = Image.new("L", (w, h), 0)
+    d = ImageDraw.Draw(tmp)
+    d.text((0, 0), text, fill=255, font=font)
+    return tmp.tobytes(), w, h
+
+
+# ---------------------------------------------------------------------------
+# Image widget resource encoding (raw pixels into the resource area)
+# ---------------------------------------------------------------------------
+def _image_has_alpha(im):
+    """True if the source carries per-pixel transparency (-> w*h*3 alpha format)."""
+    if im.mode in ("RGBA", "LA"):
+        # any non-opaque pixel?
+        alpha = im.getchannel("A")
+        return alpha.getextrema()[0] < 255
+    return im.mode == "P" and "transparency" in im.info
+
+
+def _rgb565_bytes(im_rgb):
+    """RGB PIL image -> big-endian RGB565, w*h*2 bytes, row-major."""
+    raw = im_rgb.tobytes()                       # RGBRGB... 3 bytes/pixel
+    out = bytearray(len(raw) // 3 * 2)
+    for i in range(0, len(raw), 3):
+        r, g, b = raw[i], raw[i + 1], raw[i + 2]
+        v = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+        j = i // 3 * 2
+        out[j] = (v >> 8) & 0xFF
+        out[j + 1] = v & 0xFF
+    return bytes(out)
+
+
+def render_image_resource(paths, w, h):
+    """Render one or more source images to the raw resource bytes for an Image
+    widget scaled to (w, h).
+
+    Returns (data, frame_count, is_static, has_alpha). Each frame is:
+      opaque -> RGB565, w*h*2 bytes;  alpha -> RGB565 (2) + 8-bit alpha (1),
+      w*h*3 bytes. Frames are stored consecutively. `paths` is a sorted list of
+      source files (1 = static, N = animation).
+    """
+    from PIL import Image
+    data = bytearray()
+    has_alpha = False
+    for p in paths:
+        with Image.open(p) as im:
+            if _image_has_alpha(im):
+                has_alpha = True
+                break
+    for p in paths:
+        with Image.open(p) as src:
+            im = src.resize((w, h)) if src.size != (w, h) else src.copy()
+        if has_alpha:
+            im = im.convert("RGBA")
+            rgb = _rgb565_bytes(im.convert("RGB"))
+            alpha = im.getchannel("A").tobytes()
+            # interleave: RGB565(2) + alpha(1) per pixel
+            for i in range(w * h):
+                data += rgb[2 * i:2 * i + 2]
+                data += alpha[i:i + 1]
+        else:
+            data += _rgb565_bytes(im.convert("RGB"))
+    fc = len(paths)
+    return bytes(data), fc, fc <= 1, has_alpha
+
+
+def _image_frame_paths(images_dir, image_path):
+    """Resolve an <imagePath> to a sorted frame list. A path like
+    ./images/WIDE_PATH/wide_path_0.jpg with siblings wide_path_1..N.jpg in the
+    same folder is treated as an animation; a plain file is a single static frame."""
+    if not image_path:
+        return []
+    rel = image_path.replace("\\", "/")
+    parts = [p for p in rel.split("/") if p not in ("", ".", "images")]
+    full = os.path.join(images_dir, *parts) if images_dir else image_path
+    if not os.path.exists(full):
+        # also try just the basename under images_dir
+        alt = os.path.join(images_dir, os.path.basename(image_path)) if images_dir else None
+        if alt and os.path.exists(alt):
+            full = alt
+        else:
+            return []
+    folder = os.path.dirname(full)
+    base = os.path.basename(full)
+    stem, ext = os.path.splitext(base)
+    # animation: <prefix>_<n><ext> siblings
+    import re
+    m = re.match(r"^(.*?)(\d+)$", stem)
+    if m:
+        prefix = m.group(1)
+        sibs = []
+        for f in os.listdir(folder):
+            fs, fe = os.path.splitext(f)
+            mm = re.match(r"^(.*?)(\d+)$", fs)
+            if fe.lower() == ext.lower() and mm and mm.group(1) == prefix:
+                sibs.append((int(mm.group(2)), os.path.join(folder, f)))
+        if len(sibs) > 1:
+            sibs.sort()
+            return [p for _, p in sibs]
+    return [full]
 
 
 # ---------------------------------------------------------------------------
@@ -163,8 +286,11 @@ def parse_ui(xml_bytes):
             w["text"] = f.findtext("text", "") or ""
             w["fontSize"] = int(f.findtext("fontSize", "0") or "0")
             w["bold"] = int(f.findtext("bold", "0") or "0")
+            w["italic"] = int(f.findtext("italic", "0") or "0")
         else:
-            w["fontColor"] = "ffffffff"; w["text"] = ""; w["fontSize"] = 0; w["bold"] = 0
+            w["fontColor"] = "ffffffff"; w["text"] = ""; w["fontSize"] = 0
+            w["bold"] = 0; w["italic"] = 0
+        w["imagePath"] = el.findtext("imagePath", "") or ""
         w["hAlign"] = int(el.findtext("hAlign", "0"))
         st = el.find("style")
         if st is not None:
@@ -241,7 +367,8 @@ def _nearest_size(lib, bt, size, warnings):
 # entry builders
 # ---------------------------------------------------------------------------
 def build_entry(w, wid, portrait, template=None, metric_tail=None,
-                mask_w=None, mask_h=None, mask_ptr=None, field_override=None):
+                mask_w=None, mask_h=None, mask_ptr=None, field_override=None,
+                img_ptr=None, img_frames=None, img_static=None):
     """Build one 64-byte widget entry.
 
     template   : legacy reuse path — full 64-byte base entry of same type; lends
@@ -250,6 +377,8 @@ def build_entry(w, wid, portrait, template=None, metric_tail=None,
                  (Number/DateTime), whose advance metrics we keep and colour we
                  overwrite.
     mask_w/h/ptr: from-scratch path — StaticText rendered-mask size + resource ptr.
+    img_ptr/frames/static: from-scratch path — Image resource pointer, frame count
+                 and static/anim flag.
     """
     template_tail = template[12:64] if template else None
     bt = UI2BLOB[w["type"]]
@@ -273,6 +402,15 @@ def build_entry(w, wid, portrait, template=None, metric_tail=None,
     struct.pack_into("<H", e, 6, by & 0xFFFF)
     struct.pack_into("<H", e, 8, bw & 0xFFFF)
     e[10] = w["height"] & 0xFF
+    # Reuse path: the aligned base entry is the authoritative geometry. For the
+    # common (narrow / band-2) case ui_to_blob_xy already matches it, but for
+    # widgets whose band-relative Y the editor derives from glyph/box metrics
+    # (Number/DateTime, and ProgressBars/StaticText in bands above the last where
+    # a per-band vertical offset appears — see docs/THEME_UNKNOWNS.md), the pure
+    # transform diverges. Copying [3:11] verbatim keeps the reuse path byte-exact
+    # regardless. (StaticText/Image geometry in from-scratch is (re)derived below.)
+    if template is not None:
+        e[3:11] = template[3:11]
 
     if bt == 0x8b:   # ProgressBar
         e[11] = 1
@@ -287,7 +425,15 @@ def build_entry(w, wid, portrait, template=None, metric_tail=None,
             e[8:12] = template[8:12]
             e[12:64] = template_tail
         elif mask_ptr is not None:         # from-scratch: our rendered mask
-            struct.pack_into("<H", e, 8, mask_w & 0xFFFF)
+            # The stored w/h are the MASK dimensions (not the .ui box), and the
+            # portrait wide-transform applies to the mask width too: a mask wider
+            # than 256 stores w-256 and its band-relative y gets +256.
+            sw, sy, h = mask_w, by, mask_h
+            if portrait and mask_w > 256:
+                sw = mask_w - 256
+                sy = by + 256
+            struct.pack_into("<H", e, 6, sy & 0xFFFF)
+            struct.pack_into("<H", e, 8, sw & 0xFFFF)
             e[10] = mask_h & 0xFF
             e[12] = (mask_ptr >> 16) & 0xFF
             e[13] = (mask_ptr >> 8) & 0xFF
@@ -323,9 +469,17 @@ def build_entry(w, wid, portrait, template=None, metric_tail=None,
     elif bt == 0x84:  # Image (static or animation)
         e[11] = 0
         if template:                        # reuse: copy resource pointer [12:15],
-            e[12:64] = template_tail         # frame count [15] and static/anim flag [16]
-        else:                               # from-scratch image resource not yet emitted
-            struct.pack_into(">H", e, 18, w.get("imageDelay", 0) & 0xFFFF)
+            e[12:64] = template_tail         # frame count [16] and static/anim flag [17]
+        elif img_ptr is not None:           # from-scratch: our raw pixel resource
+            # For Image the stored w/h are the DISPLAY size (untransformed source
+            # dims); the wide-transform still applies to [8:10] like other widgets
+            # (it wraps the bl_x band) but the resource is w*h at the full width.
+            e[12] = (img_ptr >> 16) & 0xFF
+            e[13] = (img_ptr >> 8) & 0xFF
+            e[14] = img_ptr & 0xFF
+            e[15] = 0x00
+            e[16] = (img_frames or 1) & 0xFF     # frame count (1 = static)
+            e[17] = 0x01 if img_static else 0x00  # static/anim flag
     return e
 
 
@@ -338,18 +492,25 @@ def compile_ui_to_blob(ui_xml, images_dir=None, base_blob_for_resources=None,
 
     render_text=False : legacy reuse path (byte-exact self-compile). Requires
                         base_blob_for_resources; reuses its records + resources.
-    render_text=True  : from-scratch authoring. StaticText masks are rendered
-                        with PIL; background honours <widgetParent>; Number/
-                        DateTime metric tails are taken from the metric library
-                        built from base_blob_for_resources (+ extra_metric_bases).
+    render_text=True  : from-scratch authoring. StaticText -> rendered 8-bpp
+                        coverage masks; Image -> raw RGB565 / RGB565+alpha pixels;
+                        both laid out in a fresh resource area APPENDED after the
+                        base's. Number/DateTime digit glyphs (undecoded format)
+                        and their geometry/metric tails are REUSED from the base
+                        blob's aligned entries + resource area (kept intact at
+                        their original offsets). Background is honoured from
+                        <widgetParent>, or retained from the base when it carries
+                        the Number resource area.
 
-    images_dir : theme image folder (for background image JPEG).
-    base_blob_for_resources : a known-good same-resolution blob. In legacy mode
-                        it supplies the whole resource area; in from-scratch mode
-                        it (plus extra_metric_bases) supplies Number/DateTime
-                        metric tails only.
-    extra_metric_bases : optional list of (blob_bytes, ui_xml_bytes) to widen the
-                        metric library (more font sizes).
+    images_dir : theme image folder (StaticText none; Image + background pixels).
+    base_blob_for_resources : a known-good same-resolution blob. Legacy mode: the
+                        whole resource area. From-scratch mode: supplies the
+                        Number/DateTime digit-glyph resource area + their aligned
+                        entry geometry/tails (required when the .ui has any
+                        Number/DateTime widget).
+    extra_metric_bases : accepted for backwards compatibility; no longer used
+                        (from-scratch aligns Number/DateTime entries against the
+                        base blob directly).
     """
     widgets = parse_ui(ui_xml)
     parent = next((w for w in widgets if w["tag"] == "widgetParent"), None)
@@ -410,64 +571,105 @@ def _compile_reuse(uiw, parent, images_dir, base, W, H, portrait):
 
 def _compile_from_scratch(uiw, parent, images_dir, base, extra_metric_bases,
                           W, H, portrait):
-    """From-scratch: render StaticText masks, honour background, look up metrics."""
-    warnings = []
-    # --- metric library (Number/DateTime tails by size) ---
-    metric_sources = []
-    if base is not None and extra_metric_bases is None:
-        # caller gave only a blob; we can't derive its .ui here, so treat
-        # extra_metric_bases as the authoritative (blob,ui) list when present.
-        pass
-    if extra_metric_bases:
-        metric_sources.extend(extra_metric_bases)
-    lib = build_metric_library(metric_sources) if metric_sources else {}
+    """From-scratch authoring.
 
-    has_num_dt = any(UI2BLOB.get(w["type"]) in (0x92, 0x8e) for w in uiw)
-    if has_num_dt and not lib:
-        warnings.append("Number/DateTime widgets present but no metric library "
-                        "provided (pass extra_metric_bases=[(blob,ui),...]); "
-                        "their glyph metrics will be zero.")
+    StaticText -> rendered 8-bpp coverage masks; Image -> raw RGB565 (opaque) or
+    RGB565+alpha (transparent) pixels; both laid out in a fresh resource area.
+    Number/DateTime glyphs are NOT synthesised (format undecoded): we REUSE the
+    base blob wholesale (records + resource area) as the starting resource region
+    and copy each Number/DateTime's aligned base entry (geometry [3:11] + metric
+    tail [12:64]) so those widgets keep working at their base offsets. New
+    StaticText/Image resources are APPENDED after the base resource area, so base
+    Number pointers stay valid. Requires `base` when Number/DateTime are present.
+    """
+    warnings = []
+    types = {UI2BLOB.get(w["type"]) for w in uiw}
+    has_num_dt = 0x92 in types or 0x8e in types
+
+    # Pool of base entries by type, popped in document order to align each
+    # Number/DateTime widget with its editor entry (same order the reuse path
+    # uses; verified byte-exact on SysStatus/NeonGrid).
+    base_pool = defaultdict(deque)
+    base_res = b""            # base records + resource area (0x1000..content_len)
+    if base is not None:
+        _bents, _ = _base_widget_table(base)
+        for be in _bents:
+            base_pool[be[0]].append(bytes(be))
+        base_content_len = struct.unpack_from(">I", base, 0x58)[0]
+        base_res = base[RECORD_OFFSET:base_content_len]
+    if has_num_dt and base is None:
+        warnings.append("Number/DateTime widgets present but no base blob given; "
+                        "their digit glyphs (undecoded format) cannot be emitted.")
 
     # --- background ---
+    # When we reuse the base resource area (Number/DateTime present) the base
+    # already carries the background JPEG record at 0x1000; keep it (and only swap
+    # it for a solid color if the .ui has no background image). Otherwise build a
+    # single-frame background record from the .ui.
     bg_type = parent.get("backgroundType", 0) if parent else 0
-    bg_record = b""
-    bg_flag = 0x00
-    framecount = 0
     bg_color565 = rgb565(parent.get("backgroundColor", "ff000000")) if parent else 0
-    if bg_type == 1 and parent and parent.get("backgroundImagePath") and images_dir:
-        from PIL import Image
-        bgpath = os.path.join(images_dir, os.path.basename(parent["backgroundImagePath"]))
-        if os.path.exists(bgpath):
-            import io
-            im = Image.open(bgpath).convert("RGB")
-            if im.size != (W, H):
-                im = im.resize((W, H))
-            buf = io.BytesIO(); im.save(buf, format="JPEG")
-            jpg = buf.getvalue()
-            bg_record = struct.pack(">I", len(jpg)) + jpg
-            bg_flag = 0x10
-            framecount = 1
-        else:
-            warnings.append(f"backgroundImagePath not found: {bgpath}")
+    reuse_base_res = has_num_dt and base is not None
 
-    # --- render StaticText masks (dedup by (text,size,bold)) ---
-    # resource area begins right after the (optional) background record at 0x1000.
-    res_base = RECORD_OFFSET + len(bg_record)
-    mask_blobs = []          # list of (bytes) in emission order
-    mask_index = {}          # (text,size,bold) -> (ptr, w, h)
-    st_info = {}             # id(widget) -> (ptr, w, h)
+    own_bg_record = b""
+    own_bg_flag = 0x00
+    own_framecount = 0
+    if not reuse_base_res:
+        if bg_type == 1 and parent and parent.get("backgroundImagePath") and images_dir:
+            from PIL import Image
+            import io
+            bgpath = os.path.join(images_dir, os.path.basename(parent["backgroundImagePath"]))
+            if os.path.exists(bgpath):
+                im = Image.open(bgpath).convert("RGB")
+                if im.size != (W, H):
+                    im = im.resize((W, H))
+                buf = io.BytesIO(); im.save(buf, format="JPEG")
+                jpg = buf.getvalue()
+                own_bg_record = struct.pack(">I", len(jpg)) + jpg
+                own_bg_flag = 0x10
+                own_framecount = 1
+            else:
+                warnings.append(f"backgroundImagePath not found: {bgpath}")
+
+    # The resource area we start from (base's records+resources, or our own bg).
+    start_res = base_res if reuse_base_res else own_bg_record
+    res_base = RECORD_OFFSET + len(start_res)   # where NEW resources begin
+
+    # --- render StaticText masks (dedup by identical (text,size,bold,italic)) ---
+    appended = bytearray()
     cursor = res_base
+    mask_index = {}          # (text,size,bold,italic) -> (ptr, w, h)
+    st_info = {}             # id(widget) -> (ptr, w, h)
     for w in uiw:
         if UI2BLOB.get(w["type"]) != 0x93:
             continue
-        key = (w["text"], w["fontSize"], bool(w["bold"]))
+        key = (w["text"], w["fontSize"], bool(w["bold"]), bool(w.get("italic", 0)))
         if key not in mask_index:
-            mb, mw, mh = render_text_mask(w["text"], w["fontSize"], w["bold"])
-            ptr = cursor
-            mask_index[key] = (ptr, mw, mh)
-            mask_blobs.append(mb)
+            mb, mw, mh = render_text_mask(w["text"], w["fontSize"], w["bold"],
+                                          w.get("italic", 0))
+            mask_index[key] = (cursor, mw, mh)
+            appended += mb
             cursor += len(mb)
         st_info[id(w)] = mask_index[key]
+
+    # --- render Image resources (dedup by (imagePath, w, h)) ---
+    img_index = {}           # (imagePath, w, h) -> (ptr, frames, static)
+    im_info = {}             # id(widget) -> (ptr, frames, static)
+    for w in uiw:
+        if UI2BLOB.get(w["type"]) != 0x84:
+            continue
+        key = (w.get("imagePath", ""), w["width"], w["height"])
+        if key not in img_index:
+            paths = _image_frame_paths(images_dir, w.get("imagePath", ""))
+            if not paths:
+                warnings.append(f"image not found: {w.get('imagePath','')}")
+                img_index[key] = (0, 1, True)
+            else:
+                data, fc, static, has_a = render_image_resource(
+                    paths, w["width"], w["height"])
+                img_index[key] = (cursor, fc, static)
+                appended += data
+                cursor += len(data)
+        im_info[id(w)] = img_index[key]
 
     # --- widget table ---
     table = bytearray()
@@ -478,28 +680,60 @@ def _compile_from_scratch(uiw, parent, images_dir, base, extra_metric_bases,
         if bt == 0x93:
             ptr, mw, mh = st_info[id(w)]
             table += build_entry(w, i, portrait, mask_w=mw, mask_h=mh, mask_ptr=ptr)
+        elif bt == 0x84:
+            ptr, fc, static = im_info[id(w)]
+            table += build_entry(w, i, portrait, img_ptr=ptr, img_frames=fc,
+                                 img_static=static)
         elif bt in (0x92, 0x8e):
-            tail = _nearest_size(lib, bt, w["fontSize"], warnings)
-            table += build_entry(w, i, portrait, metric_tail=tail)
+            # Reuse the aligned base entry verbatim: its geometry [3:11] and glyph
+            # metric tail [12:64] point at the (unchanged) base resource offsets.
+            tmpl = base_pool[bt].popleft() if base_pool[bt] else None
+            if tmpl is None:
+                warnings.append(f"no base entry to align {'Number' if bt==0x92 else 'DateTime'}"
+                                f" widget #{i}; emitting geometry-only entry")
+                table += build_entry(w, i, portrait)
+            else:
+                fo = tmpl[2]
+                # keep base geometry+tail but rebind field id and recolor from .ui
+                e = build_entry(w, i, portrait, template=tmpl, field_override=fo)
+                e = bytearray(e)
+                e[1] = i & 0xFF
+                e[2] = (0x15 if bt == 0x8e else w.get("fastSensor", 0)) & 0xFF
+                table += bytes(e)
+        elif bt == 0x8b:  # ProgressBar
+            # Colors come from the .ui; but the editor's band-relative Y packing
+            # for tall/multi-band layouts is not a confirmed pure transform (a
+            # per-band offset appears in some themes — see docs/THEME_UNKNOWNS.md),
+            # so when a matching base entry is available we copy its geometry
+            # [3:11] to stay byte-consistent with the editor's layout.
+            tmpl = base_pool[bt].popleft() if base_pool[bt] else None
+            e = bytearray(build_entry(w, i, portrait))
+            if tmpl is not None:
+                e[3:11] = tmpl[3:11]
+            table += bytes(e)
         else:
             table += build_entry(w, i, portrait)
 
     # --- assemble ---
-    # header + widget table region padded to 0x1000, then bg record, then masks.
     out = bytearray(RECORD_OFFSET)          # 0x0000 .. 0x1000, zeroed
     out[0:4] = b"\x96\x02\x00\x00"
+    out[1] = 0x02                           # orientation: upright
     out[0x40] = 0x81
     out[0x4b] = 0x01 if portrait else 0x00
     struct.pack_into(">H", out, 0x47, W)
     struct.pack_into(">H", out, 0x49, H)
-    struct.pack_into(">H", out, 0x4c, bg_color565)      # bg color (solid) / const
-    out[0x50] = bg_flag
-    struct.pack_into(">I", out, 0x54, framecount)
+    if reuse_base_res:
+        # keep the base's descriptor bg color / flag / framecount (its bg record
+        # is retained); copy [0x4c..0x58) so the pointers stay consistent.
+        out[0x4c:0x58] = base[0x4c:0x58]
+    else:
+        struct.pack_into(">H", out, 0x4c, bg_color565 or 0xF79E)
+        out[0x50] = own_bg_flag
+        struct.pack_into(">I", out, 0x54, own_framecount)
     out[WIDGET_TABLE_START:WIDGET_TABLE_START + len(table)] = table
 
-    out += bg_record
-    for mb in mask_blobs:
-        out += mb
+    out += start_res
+    out += appended
 
     content_len = len(out)
     struct.pack_into(">I", out, 0x58, content_len)
