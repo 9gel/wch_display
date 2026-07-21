@@ -39,6 +39,24 @@ from 8-bpp coverage masks + per-glyph "metric tails" stored after the background
 JPEG. We currently **copy** these from a base blob keyed by (type, fontSize). To
 author freely we need the exact format.
 
+### RESOLVED (from the labels + FontMatrix captures)
+- **StaticText mask = 8-bpp coverage**, row-major `w*h` bytes, anti-aliased
+  (~16 levels), colourised on-device by `[15:17]` RGB565. Pointer `[12:15]` BE24.
+- **Font = Liberation Sans** (the editor's "Arial"; metric-compatible).
+- **Pixel size = round(fontSize * 4/3)** — i.e. points at **96 DPI**. Verified:
+  mask height == FreeType `ascent+descent` at that pixel size (size 24→36, 32→49,
+  matches within rounding across sizes 8..76). Width == inked advance.
+- **The portrait wide-transform applies to StaticText masks too**: a mask wider
+  than 256 stores `w-256` (76pt "76:Ag5.2%" → stored 237 = 493-256) and its `by`
+  gets +256, same rule as ProgressBars.
+- **Numbers** keep their own digit-glyph resource (separate from text masks; the
+  ~36 KB region after the text masks). Digit-glyph exact layout still TODO.
+- STILL TO NAIL for *byte-exact* AA: per-glyph integer-advance + FreeType hinting
+  mode vs the editor's rasteriser (our render is ~4-6px wider over ~8 chars and
+  ~0.6 pixel-correlation — same text, not yet identical pixels). Sizes are close
+  enough (±1-2px) to emit correctly-*dimensioned* masks now, which is what the
+  resource layout needs; byte-exact AA is a later polish.
+
 **P1a — StaticText matrix.** Add many `StaticText` widgets varying ONE property
 at a time:
 - Every **font size** the dropdown offers (note them all — we've only seen
