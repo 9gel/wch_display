@@ -256,7 +256,9 @@ def build_entry(w, wid, portrait, template=None, metric_tail=None,
     bx, by, bw = ui_to_blob_xy(w["x"], w["y"], w["width"], portrait)
     e = bytearray(64)
     e[0] = bt
-    e[1] = wid & 0xFF
+    # id [1]: reuse path copies the base entry's id (the editor's own scheme,
+    # which isn't always the sequential document index); from-scratch uses wid.
+    e[1] = (template[1] if template is not None else wid) & 0xFF
     # field id [2]: DateTime is fixed 0x15; otherwise the data-field id. The
     # exact convention is theme-dependent (Simplicity stores == fastSensor;
     # homelab_v2 stores fastSensor+1 so the 0x66 driver addresses fields 2..21).
@@ -318,9 +320,12 @@ def build_entry(w, wid, portrait, template=None, metric_tail=None,
         else:
             struct.pack_into(">H", e, 12, rgb565(w.get("fontColor")))
             e[14] = 0xFF
-    elif bt == 0x84:  # Image (animation)
+    elif bt == 0x84:  # Image (static or animation)
         e[11] = 0
-        struct.pack_into(">H", e, 18, w.get("imageDelay", 0) & 0xFFFF)
+        if template:                        # reuse: copy resource pointer [12:15],
+            e[12:64] = template_tail         # frame count [15] and static/anim flag [16]
+        else:                               # from-scratch image resource not yet emitted
+            struct.pack_into(">H", e, 18, w.get("imageDelay", 0) & 0xFFFF)
     return e
 
 
