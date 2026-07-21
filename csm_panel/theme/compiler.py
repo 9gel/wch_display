@@ -23,7 +23,9 @@ STATUS OF EACH PIECE (see SPEC.md for the full derivation):
   * descriptor / header .................. CONFIRMED (A,C exact; B consistent)
   * widget-table framing (64B entries) ... CONFIRMED (A,C exact)
   * .ui-type -> blob-type map ............ CONFIRMED (A,C exact)
-  * coordinate reslice transform ......... CONFIRMED (A,C exact, byte-perfect)
+  * coordinate reslice transform ......... CONFIRMED byte-perfect incl. wide
+                                           (>256px) band-wrap; uw>512 / uw==256
+                                           still UNVERIFIED (see docs/THEME_UNKNOWNS.md)
   * ProgressBar(0x8b) color layout ....... CONFIRMED
   * StaticText(0x93) color+ptr layout .... CONFIRMED (ptr into 8bpp mask area)
   * Number(0x92) color + hAlign flag ..... CONFIRMED; digit-metric table INFERRED
@@ -75,13 +77,24 @@ def argb_to_rgb(argb_hex):
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
-def ui_to_blob_xy(ux, uy, portrait):
+def ui_to_blob_xy(ux, uy, uw, portrait):
     """Portrait 480x800 -> landscape framebuffer via 256-tall band reslice.
-    bl_x = (ux mod 256) + 256*(uy//256) ; bl_y = uy mod 256.   Landscape = identity."""
+
+    Returns (bl_x, bl_y, bl_w). Verified byte-exact against the Neon Grid blob
+    (20 widgets, narrow Numbers + wide 300px bars):
+      bl_x = (ux mod 256) + 256*(uy//256)                  # both cases
+      narrow (uw <= 256):  bl_y = uy mod 256 ;        bl_w = uw
+      wide   (uw >  256):  bl_y = (uy mod 256) + 256 ; bl_w = uw - 256
+    A >256-wide widget wraps into the next band down (by += 256) and its stored
+    width drops by one band. Landscape themes are identity.
+    NOTE: the wide rule is only confirmed for 256 < uw < 512 (single band-cross);
+    uw > 512 (multi-band) and uw == 256 are UNVERIFIED (see PROTOCOL_NOTES)."""
     if not portrait:
-        return ux, uy
-    band = uy // 256
-    return (ux % 256) + 256 * band, uy % 256
+        return ux, uy, uw
+    bl_x = (ux % 256) + 256 * (uy // 256)
+    if uw > 256:
+        return bl_x, (uy % 256) + 256, uw - 256
+    return bl_x, uy % 256, uw
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +251,7 @@ def build_entry(w, wid, portrait, template=None, metric_tail=None,
     """
     template_tail = template[12:64] if template else None
     bt = UI2BLOB[w["type"]]
-    bx, by = ui_to_blob_xy(w["x"], w["y"], portrait)
+    bx, by, bw = ui_to_blob_xy(w["x"], w["y"], w["width"], portrait)
     e = bytearray(64)
     e[0] = bt
     e[1] = wid & 0xFF
@@ -254,7 +267,7 @@ def build_entry(w, wid, portrait, template=None, metric_tail=None,
     e[3] = (w["x"] // 256) & 0xFF        # CONFIRMED: portrait x-band index
     struct.pack_into("<H", e, 4, bx & 0xFFFF)
     struct.pack_into("<H", e, 6, by & 0xFFFF)
-    struct.pack_into("<H", e, 8, w["width"] & 0xFFFF)
+    struct.pack_into("<H", e, 8, bw & 0xFFFF)
     e[10] = w["height"] & 0xFF
 
     if bt == 0x8b:   # ProgressBar
