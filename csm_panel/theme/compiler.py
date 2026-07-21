@@ -30,7 +30,9 @@ STATUS OF EACH PIECE (see SPEC.md for the full derivation):
   * StaticText(0x93) color+ptr layout .... CONFIRMED (ptr into 8bpp mask area)
   * Number(0x92) color + hAlign flag ..... CONFIRMED; digit-metric table INFERRED
   * DateTime(0x8e) color + format string . CONFIRMED
-  * Image(0x84) ptr/framecount/delay ..... INFERRED
+  * Image(0x84) ptr[12:15]+framecount[15] . CONFIRMED (raw RGB565 w*h*2/frame;
+                                           alpha PNG = w*h*3 = RGB565+8bit alpha;
+                                           frames consecutive in resource area)
   * StaticText mask RENDERING (render_text) structurally CONFIRMED (8bpp, w*h,
                                            row-major); glyph shapes differ from
                                            the vendor font. EXPERIMENTAL: a

@@ -178,7 +178,31 @@ edited widgets.)
   **RGB565 big-endian** in the tail; StaticText carries a BE24 pointer `[12:15]`
   into the resource area.
 - background JPEG record at `0x1000` (BE32 size + JPEG) when present; then the
-  **resource area** of 8-bpp coverage masks for StaticText/DateTime glyphs.
+  **resource area** of coverage masks + image bitmaps (see below).
+
+**Records vs resource area.** `0x1000` holds the **JPEG records** (`[BE32 size][JPEG]`
+repeated, size=0 terminates) — these are the animated **background** frames (one
+record per frame). Everything a widget points to (StaticText/DateTime glyph masks,
+**Image widget bitmaps**) lives in the **resource area** *after* the records, indexed
+by BE24 byte offsets from blob start.
+
+**Image widget (`0x84`)** tail: `[12:15]` = BE24 pointer into the resource area,
+`[15]` = **frame count** (1 = static; N = animation), `[16]` = static/anim flag
+(`0x01` static, `0x00` animated). Image pixels are **raw, uncompressed** in the
+resource area, `frame_count` frames stored consecutively:
+- **opaque** image (e.g. a JPEG/GIF source): **RGB565, `w*h*2` bytes/frame**
+  (verified: WIDE_PATH 9 frames × 480×200×2 = 1,728,000 B).
+- **alpha** image (PNG w/ transparency): **`w*h*3` bytes/frame = RGB565 (2) + 8-bit
+  alpha (1) per pixel** (verified: 230×60×3=41,400; 198×50×3=29,700). This is how
+  translucent panels / transparent-background logos composite over the background.
+  `w,h` are the widget's *display* size (the editor rescales the source to fit).
+
+**Consequences for authoring:**
+- **Animations are stored raw, so they are huge** — a 480×200 animation costs
+  192 KB/frame; the 4 MiB theme cap is reached fast. Keep animated regions small.
+- **A "static" background still bundles every JPEG in its source folder** (30 STARRY
+  frames = ~1.5 MB were shipped for a static bg). For a static background put a
+  **single** frame in the folder.
 
 **ProgressBar tail** (`0x8b`, bytes `[12:]`): `[12:14]` bgColor, `[14:16]`
 fgColor, `[16:18]` frameColor (all RGB565 BE), then a u16 at `[18:20]` and again
