@@ -268,15 +268,19 @@ def _image_has_alpha(im):
 
 
 def _rgb565_bytes(im_rgb):
-    """RGB PIL image -> big-endian RGB565, w*h*2 bytes, row-major."""
+    """RGB PIL image -> LITTLE-endian RGB565, w*h*2 bytes, row-major.
+
+    Image-resource pixels are stored little-endian (verified against the editor's
+    BandGeomImage blob). NB the widget-ENTRY colors are big-endian (`>H`) — a
+    separate code path; only raw image bitmaps use this."""
     raw = im_rgb.tobytes()                       # RGBRGB... 3 bytes/pixel
     out = bytearray(len(raw) // 3 * 2)
     for i in range(0, len(raw), 3):
         r, g, b = raw[i], raw[i + 1], raw[i + 2]
         v = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
         j = i // 3 * 2
-        out[j] = (v >> 8) & 0xFF
-        out[j + 1] = v & 0xFF
+        out[j] = v & 0xFF
+        out[j + 1] = (v >> 8) & 0xFF
     return bytes(out)
 
 
@@ -722,7 +726,13 @@ def _compile_from_scratch(uiw, parent, images_dir, base, extra_metric_bases,
         if bg_type == 1 and parent and parent.get("backgroundImagePath") and images_dir:
             from PIL import Image
             import io
-            bgpath = os.path.join(images_dir, os.path.basename(parent["backgroundImagePath"]))
+            # resolve the bg path honouring subfolders (e.g. ./images/STARRY/starry_0.jpg),
+            # same logic as _image_frame_paths; fall back to the bare basename.
+            _rel = parent["backgroundImagePath"].replace("\\", "/")
+            _parts = [p for p in _rel.split("/") if p not in ("", ".", "images")]
+            bgpath = os.path.join(images_dir, *_parts)
+            if not os.path.exists(bgpath):
+                bgpath = os.path.join(images_dir, os.path.basename(parent["backgroundImagePath"]))
             if os.path.exists(bgpath):
                 raw = open(bgpath, "rb").read()
                 with Image.open(bgpath) as probe:
