@@ -15,18 +15,22 @@ panel consumes.  Two authoring modes:
       Renders each StaticText (type 2) as an 8-bpp coverage mask (Liberation Sans,
       pixel size round(fontSize*4/3), height = ascent+descent); each Number
       (type 5) as a glyph-major 8-bpp digit strip ('0..9.-', per-glyph advance x
-      strip_h) + metric tail; and each Image (type 4) as raw resource pixels —
-      opaque source -> RGB565 (w*h*2/frame), transparent PNG -> RGB565+8-bit alpha
-      (w*h*3/frame), N frames consecutive for a folder animation. These new
-      resources are APPENDED after any reused base resource area, and each widget's
-      resource pointer targets them. Geometry [3:11] is computed purely by
-      ui_to_blob_xy for EVERY widget type (verified byte-exact vs the editor on
-      BandGeom* / GeometryEdges; the old "per-band offset" copy was a false alarm).
-      DateTime (type 6) is only partially decoded (format skeleton packed inline in
-      the tail, freeform formats crash the panel) so it still REUSES the base
-      blob's aligned entry + resource area; a base blob is required only when a
-      DateTime widget is present. Background is honoured from <widgetParent>, or
-      retained from the base when the base is reused for DateTime.
+      strip_h) + metric tail; each Image (type 4) as raw resource pixels — opaque
+      source -> RGB565 (w*h*2/frame), transparent PNG -> PLANAR alpha-plane (w*h)
+      then RGB565 colour-plane (w*h*2), N frames consecutive for a folder
+      animation; each DateTime (type 6) with a SAFE skeleton format as a glyph-
+      major atlas ('0..9' + '.-: /' + 6 px-cells) + metric tail (BE32 ptr) + inline
+      format skeleton; and each image-fill ProgressBar (type 3, showType=1 with
+      bg/fg images) as two opaque RGB565 refs with the fill flag [11]=0. Multi-
+      frame BACKGROUNDS embed one JPEG record per folder frame + a zero terminator,
+      with the descriptor's frame count [0x52] + per-frame delay [0x56] set from
+      <imageDelay>. These new resources are APPENDED after any reused base resource
+      area, and each widget's resource pointer targets them. Geometry [3:11] is
+      computed purely by ui_to_blob_xy for EVERY widget type (verified byte-exact
+      vs the editor; the old "per-band offset" copy was a false alarm). A DateTime
+      with an UNSUPPORTED/freeform format (which would crash the panel) is the only
+      remaining case that REUSES the base blob's aligned entry + resource area (a
+      base blob is then required). Background is honoured from <widgetParent>.
 
       render_text=True is HW-VALIDATED 2026-07-22: a from-scratch StaticText +
       Number + ProgressBar + image-background theme flashes and renders correctly
@@ -57,12 +61,16 @@ STATUS OF EACH PIECE (see SPEC.md for the full derivation):
                                            ptr to glyph-major digit strip, [20:46]
                                            strip_h+12 advances BE u16; from-scratch
                                            emission implemented (render_number_strip)
-  * DateTime(0x8e) color + format ........ PARTIAL: format skeleton packed inline
-                                           in tail [45:64] ("1-2-3 4:5:6"); freeform
-                                           overflows -> panel crash; reuse-only
-  * Image(0x84) ptr[12:15]+framecount[15] . CONFIRMED (raw RGB565 w*h*2/frame;
-                                           alpha PNG = w*h*3 = RGB565+8bit alpha;
-                                           frames consecutive in resource area)
+  * DateTime(0x8e) color + format ........ CONFIRMED byte-exact (DateTimeMatrix):
+                                           [15:19] BE32 strip ptr, [19:21] strip_h,
+                                           [21:45] 12 advances (6 glyphs + 6 px),
+                                           [45:64] inline format skeleton. Glyph
+                                           atlas '0..9'+'.-: /'+6 px-cells. Emitted
+                                           from-scratch for the SAFE skeletons only;
+                                           freeform overflows -> panel crash -> reuse
+  * Image(0x84) ptr[12:15]+framecount[16] . CONFIRMED (opaque raw RGB565 w*h*2/frame;
+                                           alpha PNG = PLANAR w*h alpha then w*h*2
+                                           RGB565 colour; frames consecutive)
   * StaticText mask RENDERING (render_text) structurally CONFIRMED (8bpp, w*h,
                                            row-major); glyph shapes differ from
                                            the vendor font. EXPERIMENTAL: a
@@ -256,6 +264,73 @@ def number_metric_tail(strip_h, advances):
 
 
 # ---------------------------------------------------------------------------
+# DateTime(0x8e) glyph strip + metric tail + inline format skeleton
+# ---------------------------------------------------------------------------
+# DECODED byte-exact from DateTimeMatrix.bin (sizes 16/24/40, all safe formats).
+# The DateTime tail differs from Number:
+#   [12:14] fontColor RGB565 BE; [14]=0xff
+#   [15:19] BE32 pointer to the glyph strip (NB 32-bit, not the 24-bit Number ptr)
+#   [19:21] strip_height (BE16) == FreeType ascent+descent
+#   [21:45] TWELVE advances (BE16): the 6 real glyphs '0' '.' '-' ':' ' ' '/'
+#           followed by 6 px-wide field-slot cells (px = round(fontSize*4/3))
+#   [45:64] format skeleton, NUL-terminated (freeform overruns -> panel crash)
+# The glyph strip is a glyph-major 8-bpp atlas of the 10 digits '0'..'9', then
+# '.', '-', ':', ' ', '/', then 6 px-wide cells — each an advance x strip_h block.
+# Verified: strip width (sum of advances) == 277/419/686 for sizes 16/24/40.
+DATETIME_GLYPHS = "0123456789.-: /"          # 15 glyphs, then 6 px-wide cells
+
+
+def render_datetime_strip(font_size, bold=0, italic=0):
+    """Render the DateTime glyph strip for `font_size`.
+
+    Returns (strip_bytes, strip_h, advances) where advances is the 12-entry
+    metric-tail list [d, dot, minus, colon, space, slash, px, px, px, px, px, px]
+    (px = round(fontSize*4/3)). The strip itself is a glyph-major atlas of the 10
+    digits '0'..'9' + '.' '-' ':' ' ' '/' + 6 px-wide (blank) field-slot cells,
+    each glyph an advance x strip_h 8-bpp block. Matches the editor's strip width
+    byte-exactly and its metric tail exactly (advances) / within ~1px (strip_h).
+    """
+    from PIL import Image, ImageDraw, ImageFont
+    px = _pixel_size(font_size)
+    fp = _find_font(bool(bold), bool(italic))
+    font = ImageFont.truetype(fp, px)
+    asc, desc = font.getmetrics()
+    strip_h = asc + desc
+    gadv = {ch: max(1, int(round(font.getlength(ch)))) for ch in DATETIME_GLYPHS}
+    out = bytearray()
+    # atlas: 10 digits then . - : space /  then 6 px-wide cells
+    for ch in DATETIME_GLYPHS:
+        adv = gadv[ch]
+        cell = Image.new("L", (adv, strip_h), 0)
+        ImageDraw.Draw(cell).text((0, 0), ch, fill=255, font=font)
+        out += cell.tobytes()
+    out += bytes(px * strip_h) * 6           # 6 blank px-wide field cells
+    # metric-tail advances: digit, '.', '-', ':', ' ', '/', then 6x px
+    advances = [gadv["0"], gadv["."], gadv["-"], gadv[":"], gadv[" "],
+                gadv["/"]] + [px] * 6
+    return bytes(out), strip_h, advances
+
+
+# Safe DateTime format skeletons (a freeform format black-screens the panel).
+# Map each supported <dateTimeFormat> to its inline skeleton (year=1 month=2
+# day=3 hour=4 minute=5 second=6; literals verbatim). Only these are emitted.
+_DATETIME_SKELETONS = {
+    "yyyy-mm-dd hh:nn:ss": "1-2-3 4:5:6",
+    "hh:nn:ss": "4:5:6",
+    "yyyy/mm/dd": "1/2/3",
+}
+
+
+def datetime_format_skeleton(fmt):
+    """Return the inline skeleton for a supported <dateTimeFormat>, else None.
+
+    Only the safe built-in skeletons observed in the editor are supported; any
+    other (freeform) format returns None so the caller falls back to base reuse
+    rather than emit an entry that would overrun [45:64] and crash the panel."""
+    return _DATETIME_SKELETONS.get((fmt or "").strip())
+
+
+# ---------------------------------------------------------------------------
 # Image widget resource encoding (raw pixels into the resource area)
 # ---------------------------------------------------------------------------
 def _image_has_alpha(im):
@@ -289,9 +364,17 @@ def render_image_resource(paths, w, h):
     widget scaled to (w, h).
 
     Returns (data, frame_count, is_static, has_alpha). Each frame is:
-      opaque -> RGB565, w*h*2 bytes;  alpha -> RGB565 (2) + 8-bit alpha (1),
-      w*h*3 bytes. Frames are stored consecutively. `paths` is a sorted list of
-      source files (1 = static, N = animation).
+      opaque -> RGB565, w*h*2 bytes;
+      alpha  -> PLANAR: an 8-bit ALPHA plane (w*h bytes, row-major) followed by
+                an RGB565 little-endian COLOR plane (w*h*2 bytes, row-major).
+    Both planes are full-width row-major (no band-slicing). Frames are stored
+    consecutively; a frame is w*h*3 bytes either way. `paths` is a sorted list of
+    source files (1 = static, N = animation).
+
+    The PLANAR alpha layout is CONFIRMED byte-exact against AlphaImages.bin: the
+    editor stores the whole alpha plane first, then the whole colour plane (an
+    earlier per-pixel [colorLo,colorHi,alpha] interleave rendered logos invisible
+    / panels mis-tinted). Opaque images are unchanged (byte-exact vs the editor).
     """
     from PIL import Image
     data = bytearray()
@@ -306,16 +389,40 @@ def render_image_resource(paths, w, h):
             im = src.resize((w, h)) if src.size != (w, h) else src.copy()
         if has_alpha:
             im = im.convert("RGBA")
-            rgb = _rgb565_bytes(im.convert("RGB"))
-            alpha = im.getchannel("A").tobytes()
-            # interleave: RGB565(2) + alpha(1) per pixel
-            for i in range(w * h):
-                data += rgb[2 * i:2 * i + 2]
-                data += alpha[i:i + 1]
+            data += im.getchannel("A").tobytes()          # alpha plane (w*h)
+            data += _rgb565_bytes(im.convert("RGB"))       # colour plane (w*h*2)
         else:
             data += _rgb565_bytes(im.convert("RGB"))
     fc = len(paths)
     return bytes(data), fc, fc <= 1, has_alpha
+
+
+def render_bar_image(path, w, h):
+    """Render one image-fill ProgressBar image (bg or fg) to raw resource bytes.
+
+    Bar images are OPAQUE (JPEG sources): RGB565 little-endian, w*h*2 bytes,
+    row-major — the same encoding as an opaque Image widget. Returns the bytes.
+    """
+    from PIL import Image
+    with Image.open(path) as src:
+        im = src.convert("RGB")
+        if im.size != (w, h):
+            im = im.resize((w, h))
+        return _rgb565_bytes(im)
+
+
+def _resolve_image(images_dir, image_path):
+    """Resolve a ./images/... path (honouring subfolders, falling back to the
+    bare basename) to an absolute file, or None."""
+    if not image_path or not images_dir:
+        return None
+    rel = image_path.replace("\\", "/")
+    parts = [p for p in rel.split("/") if p not in ("", ".", "images")]
+    full = os.path.join(images_dir, *parts)
+    if os.path.exists(full):
+        return full
+    alt = os.path.join(images_dir, os.path.basename(image_path))
+    return alt if os.path.exists(alt) else None
 
 
 def _image_frame_paths(images_dir, image_path):
@@ -384,6 +491,14 @@ def parse_ui(xml_bytes):
             w["fgColor"] = st.findtext("fgColor", "ff000000")
             w["bgColor"] = st.findtext("bgColor", "ff000000")
             w["frameColor"] = st.findtext("frameColor", "ff000000")
+            w["showType"] = int(st.findtext("showType", "0") or "0")
+            w["bgImagePath"] = st.findtext("bgImagePath", "") or ""
+            w["fgImagePath"] = st.findtext("fgImagePath", "") or ""
+        else:
+            w["showType"] = 0
+            w["bgImagePath"] = ""
+            w["fgImagePath"] = ""
+        w["dateTimeFormat"] = el.findtext("dateTimeFormat", "") or ""
         w["imageDelay"] = int(el.findtext("imageDelay", "0"))
         if el.tag == "widgetParent":
             w["backgroundType"] = int(el.findtext("backgroundType", "0"))
@@ -456,7 +571,8 @@ def _nearest_size(lib, bt, size, warnings):
 def build_entry(w, wid, portrait, template=None, metric_tail=None,
                 mask_w=None, mask_h=None, mask_ptr=None, field_override=None,
                 img_ptr=None, img_frames=None, img_static=None,
-                num_ptr=None, num_tail=None):
+                num_ptr=None, num_tail=None, bar_images=None,
+                dt_ptr=None, dt_tail=None):
     """Build one 64-byte widget entry.
 
     template   : legacy reuse path — full 64-byte base entry of same type; lends
@@ -503,12 +619,28 @@ def build_entry(w, wid, portrait, template=None, metric_tail=None,
         e[3:11] = template[3:11]
 
     if bt == 0x8b:   # ProgressBar
-        e[11] = 1
+        # [11] = 1 for a colour (value-driven) bar; 0 for an IMAGE-FILL bar. The
+        # editor sets [11]=0 iff showType=1 AND bg/fg images are present — that is
+        # the flag that distinguishes an image-fill bar from a colour bar
+        # (verified: ImageBar showType=0 -> [11]=1 didn't scroll on-panel;
+        # ImageBarVal showType=1 -> [11]=0 works). See docs/THEME_UNKNOWNS.md.
         struct.pack_into(">H", e, 12, rgb565(w.get("bgColor", "ff000000")))
         struct.pack_into(">H", e, 14, rgb565(w.get("fgColor", "ff000000")))
         struct.pack_into(">H", e, 16, rgb565(w.get("frameColor", "ff000000")))
-        if template_tail:
+        if bar_images is not None:      # from-scratch image-fill bar
+            e[11] = 0
+            (bgw, bgh, bgptr), (fgw, fgh, fgptr) = bar_images
+            struct.pack_into(">H", e, 18, bgw & 0xFFFF)
+            struct.pack_into(">H", e, 20, bgh & 0xFFFF)
+            struct.pack_into(">I", e, 22, bgptr & 0xFFFFFFFF)
+            struct.pack_into(">H", e, 26, fgw & 0xFFFF)
+            struct.pack_into(">H", e, 28, fgh & 0xFFFF)
+            struct.pack_into(">I", e, 30, fgptr & 0xFFFFFFFF)
+        elif template_tail:            # reuse: keep recomputed colours [12:18],
+            e[11] = template[11]       # copy the rest incl. [11] (0=image / 1=colour)
             e[18:64] = template_tail[6:52]
+        else:
+            e[11] = 1
     elif bt == 0x93:  # StaticText
         e[11] = 0
         if template:                       # legacy: reuse mask + w/h + color
@@ -560,16 +692,30 @@ def build_entry(w, wid, portrait, template=None, metric_tail=None,
                 struct.pack_into(">H", e, 12, rgb565(w.get("fontColor")))
                 e[14] = 0x00; e[15] = 0xFF
     elif bt == 0x8e:  # DateTime
-        e[11] = 1
-        tail = template[12:64] if template else metric_tail
-        if tail:
-            e[8:12] = (template[8:12] if template else e[8:12])
-            e[12:64] = tail
+        # [11] = hAlign (0 left / 2 right — DateTime's right-align renders on-panel).
+        e[11] = w.get("hAlign", 0) & 0xFF
+        if dt_ptr is not None:              # from-scratch: rendered glyph strip
+            # geometry [3:11] already set from ui_to_blob_xy above.
+            strip_h, advances, skel = dt_tail
             struct.pack_into(">H", e, 12, rgb565(w.get("fontColor")))
             e[14] = 0xFF
+            struct.pack_into(">I", e, 15, dt_ptr & 0xFFFFFFFF)   # BE32 strip ptr
+            struct.pack_into(">H", e, 19, strip_h & 0xFFFF)
+            for k, adv in enumerate(advances):                   # 12 BE16 advances
+                struct.pack_into(">H", e, 21 + 2 * k, adv & 0xFFFF)
+            fb = skel.encode("latin1")[:18]                      # NUL-terminated in [45:64]
+            e[45:45 + len(fb)] = fb
         else:
-            struct.pack_into(">H", e, 12, rgb565(w.get("fontColor")))
-            e[14] = 0xFF
+            e[11] = 1 if template is None else e[11]
+            tail = template[12:64] if template else metric_tail
+            if tail:
+                e[8:12] = (template[8:12] if template else e[8:12])
+                e[12:64] = tail
+                struct.pack_into(">H", e, 12, rgb565(w.get("fontColor")))
+                e[14] = 0xFF
+            else:
+                struct.pack_into(">H", e, 12, rgb565(w.get("fontColor")))
+                e[14] = 0xFF
     elif bt == 0x84:  # Image (static or animation)
         e[11] = 0
         if template:                        # reuse: copy resource pointer [12:15],
@@ -705,10 +851,17 @@ def _compile_from_scratch(uiw, parent, images_dir, base, extra_metric_bases,
             base_pool[be[0]].append(bytes(be))
         base_content_len = struct.unpack_from(">I", base, 0x58)[0]
         base_res = base[RECORD_OFFSET:base_content_len]
+    # DateTime with a SAFE skeleton format is emitted from scratch (glyph strip +
+    # metric tail + inline format). A DateTime with an unsupported/freeform format
+    # can only fall back to a reused base entry; without a base it renders nothing.
     if has_datetime and base is None:
-        warnings.append("DateTime widget present but no base blob given; its "
-                        "glyph strip + format skeleton (partially decoded) cannot "
-                        "be emitted from scratch.")
+        for w in uiw:
+            if UI2BLOB.get(w["type"]) == 0x8e \
+                    and datetime_format_skeleton(w.get("dateTimeFormat", "")) is None:
+                warnings.append(
+                    f"DateTime format {w.get('dateTimeFormat','')!r} is not a "
+                    f"supported safe skeleton and no base blob was given; that "
+                    f"widget cannot be emitted (a freeform format crashes the panel).")
 
     # --- background ---
     # When we reuse the base resource area (DateTime present) the base already
@@ -717,40 +870,57 @@ def _compile_from_scratch(uiw, parent, images_dir, base, extra_metric_bases,
     # single-frame background record from the .ui.
     bg_type = parent.get("backgroundType", 0) if parent else 0
     bg_color565 = rgb565(parent.get("backgroundColor", "ff000000")) if parent else 0
-    reuse_base_res = has_datetime and base is not None
+    # Only fall back to reusing the base resource area (its bg record + glyph
+    # tables) when a DateTime widget uses an UNSUPPORTED format that we can't emit
+    # from scratch. A DateTime with a supported safe skeleton is fully synthesised,
+    # so the base is not needed and the .ui background is honoured normally.
+    needs_base_datetime = base is not None and any(
+        UI2BLOB.get(w["type"]) == 0x8e
+        and datetime_format_skeleton(w.get("dateTimeFormat", "")) is None
+        for w in uiw)
+    reuse_base_res = needs_base_datetime
 
     own_bg_record = b""
     own_bg_flag = 0x00
     own_framecount = 0
+    own_bg_delay = 0
     if not reuse_base_res:
         if bg_type == 1 and parent and parent.get("backgroundImagePath") and images_dir:
             from PIL import Image
             import io
-            # resolve the bg path honouring subfolders (e.g. ./images/STARRY/starry_0.jpg),
-            # same logic as _image_frame_paths; fall back to the bare basename.
-            _rel = parent["backgroundImagePath"].replace("\\", "/")
-            _parts = [p for p in _rel.split("/") if p not in ("", ".", "images")]
-            bgpath = os.path.join(images_dir, *_parts)
-            if not os.path.exists(bgpath):
-                bgpath = os.path.join(images_dir, os.path.basename(parent["backgroundImagePath"]))
-            if os.path.exists(bgpath):
-                raw = open(bgpath, "rb").read()
-                with Image.open(bgpath) as probe:
-                    fmt, size = probe.format, probe.size
-                if fmt == "JPEG" and size == (W, H) and raw[:2] == b"\xff\xd8":
-                    jpg = raw                  # embed the source JPEG byte-for-byte (like the editor)
-                else:                          # re-encode only if wrong format/size (panel-safe)
-                    im = Image.open(bgpath).convert("RGB")
-                    if im.size != (W, H):
-                        im = im.resize((W, H))
-                    buf = io.BytesIO()
-                    im.save(buf, format="JPEG", subsampling=2, quality=90, progressive=False)
-                    jpg = buf.getvalue()
-                own_bg_record = struct.pack(">I", len(jpg)) + jpg
-                own_bg_flag = 0x10
-                own_framecount = 1
+            # Resolve the bg to a sorted frame list. A folder animation
+            # (./images/BGA/anim_0.jpg with numeric siblings) yields N frames — the
+            # editor stores each as its own JPEG record at 0x1000, in order,
+            # terminated by a zero-size record (verified: AnimatedBg.bin = 4 JPEG
+            # records + terminator). A single file yields one static record.
+            bg_paths = _image_frame_paths(images_dir, parent["backgroundImagePath"])
+            if not bg_paths:
+                warnings.append(
+                    f"backgroundImagePath not found: {parent['backgroundImagePath']}")
             else:
-                warnings.append(f"backgroundImagePath not found: {bgpath}")
+                recs = bytearray()
+                for bgpath in bg_paths:
+                    with open(bgpath, "rb") as _bf:
+                        raw = _bf.read()
+                    with Image.open(bgpath) as probe:
+                        fmt, size = probe.format, probe.size
+                    if fmt == "JPEG" and size == (W, H) and raw[:2] == b"\xff\xd8":
+                        jpg = raw              # embed source JPEG byte-for-byte
+                    else:                      # re-encode only if wrong format/size
+                        im = Image.open(bgpath).convert("RGB")
+                        if im.size != (W, H):
+                            im = im.resize((W, H))
+                        buf = io.BytesIO()
+                        im.save(buf, format="JPEG", subsampling=2, quality=90,
+                                progressive=False)
+                        jpg = buf.getvalue()
+                    recs += struct.pack(">I", len(jpg)) + jpg
+                own_framecount = len(bg_paths)
+                if own_framecount > 1:
+                    recs += b"\x00\x00\x00\x00"     # zero-size terminator
+                    own_bg_delay = parent.get("imageDelay", 0) & 0xFF
+                own_bg_record = bytes(recs)
+                own_bg_flag = 0x10
 
     # The resource area we start from (base's records+resources, or our own bg).
     start_res = base_res if reuse_base_res else own_bg_record
@@ -809,6 +979,59 @@ def _compile_from_scratch(uiw, parent, images_dir, base, extra_metric_bases,
             cursor += len(strip)
         num_info[id(w)] = num_index[key]
 
+    # --- render image-fill ProgressBar images (bg + fg raw RGB565) ---
+    # An image-fill bar is a 0x8b whose .ui <style> has showType=1 and both
+    # bgImagePath + fgImagePath. Its resource holds two opaque RGB565 blocks (bg
+    # then fg); the entry stores each as a w(BE16) h(BE16) ptr(BE32) triple. The
+    # fg image MUST be shorter (narrower) than the bg image for the auto-scroll
+    # fill animation to work (verified: ImageBarVal fg 167 < bg 300 scrolls;
+    # ImageBar's equal-width fg didn't). See docs/THEME_UNKNOWNS.md.
+    bar_info = {}            # id(widget) -> ((bgw,bgh,bgptr),(fgw,fgh,fgptr)) or None
+    for w in uiw:
+        if UI2BLOB.get(w["type"]) != 0x8b:
+            continue
+        if not (w.get("showType") == 1 and w.get("bgImagePath")
+                and w.get("fgImagePath")):
+            bar_info[id(w)] = None                 # colour bar
+            continue
+        bgp = _resolve_image(images_dir, w["bgImagePath"])
+        fgp = _resolve_image(images_dir, w["fgImagePath"])
+        if not bgp or not fgp:
+            warnings.append(f"image-fill bar image not found: "
+                            f"{w['bgImagePath']} / {w['fgImagePath']}")
+            bar_info[id(w)] = None
+            continue
+        from PIL import Image
+        with Image.open(bgp) as im:
+            bgw, bgh = im.size
+        with Image.open(fgp) as im:
+            fgw, fgh = im.size
+        if fgw >= bgw:
+            warnings.append(f"image-fill bar fg ({fgw}px) not shorter than bg "
+                            f"({bgw}px); auto-scroll fill will not animate")
+        bg_ptr = cursor
+        appended += render_bar_image(bgp, bgw, bgh)
+        cursor += bgw * bgh * 2
+        fg_ptr = cursor
+        appended += render_bar_image(fgp, fgw, fgh)
+        cursor += fgw * fgh * 2
+        bar_info[id(w)] = ((bgw, bgh, bg_ptr), (fgw, fgh, fg_ptr))
+
+    # --- render DateTime glyph strips (dedup by (fontSize, bold, italic)) ---
+    dt_index = {}            # (fontSize,bold,italic) -> (ptr, strip_h, advances)
+    dt_info = {}             # id(widget) -> (ptr, strip_h, advances)
+    for w in uiw:
+        if UI2BLOB.get(w["type"]) != 0x8e:
+            continue
+        key = (w["fontSize"], bool(w["bold"]), bool(w.get("italic", 0)))
+        if key not in dt_index:
+            strip, strip_h, advances = render_datetime_strip(
+                w["fontSize"], w["bold"], w.get("italic", 0))
+            dt_index[key] = (cursor, strip_h, advances)
+            appended += strip
+            cursor += len(strip)
+        dt_info[id(w)] = dt_index[key]
+
     # --- widget table ---
     table = bytearray()
     for i, w in enumerate(uiw, start=1):
@@ -825,23 +1048,34 @@ def _compile_from_scratch(uiw, parent, images_dir, base, extra_metric_bases,
         elif bt == 0x92:  # Number — synthesised digit strip + metric tail
             ptr, tail = num_info[id(w)]
             table += build_entry(w, i, portrait, num_ptr=ptr, num_tail=tail)
-        elif bt == 0x8e:  # DateTime — reuse the aligned base entry verbatim
-            # Its geometry [3:11], format skeleton [45:64] and glyph metric tail
-            # point at the (unchanged) base resource offsets; from-scratch DateTime
-            # is not yet safe to emit (see docs/THEME_UNKNOWNS.md).
-            tmpl = base_pool[bt].popleft() if base_pool[bt] else None
-            if tmpl is None:
-                warnings.append(f"no base entry to align DateTime widget #{i}; "
-                                f"emitting geometry-only entry")
-                table += build_entry(w, i, portrait)
+        elif bt == 0x8e:  # DateTime
+            skel = datetime_format_skeleton(w.get("dateTimeFormat", ""))
+            if skel is not None:
+                # From-scratch: synthesised glyph strip + metric tail + inline
+                # format skeleton. ONLY the safe skeleton formats are emitted; a
+                # freeform format returns None and falls back to base reuse (a
+                # wrong format black-screens the panel — see docs/THEME_UNKNOWNS.md).
+                ptr, strip_h, advances = dt_info[id(w)]
+                table += build_entry(w, i, portrait, dt_ptr=ptr,
+                                     dt_tail=(strip_h, advances, skel))
             else:
-                e = bytearray(build_entry(w, i, portrait, template=tmpl,
-                                          field_override=tmpl[2]))
-                e[1] = i & 0xFF
-                e[2] = 0x15
-                table += bytes(e)
-        elif bt == 0x8b:  # ProgressBar — pure transform geometry (verified exact)
-            table += build_entry(w, i, portrait)
+                # Unsafe/unknown format — reuse the aligned base entry verbatim
+                # (its geometry, glyph tail and format skeleton stay valid).
+                tmpl = base_pool[bt].popleft() if base_pool[bt] else None
+                if tmpl is None:
+                    warnings.append(
+                        f"DateTime widget #{i} has an unsupported format "
+                        f"{w.get('dateTimeFormat','')!r} and no base blob to "
+                        f"reuse; emitting geometry-only entry (WILL NOT render)")
+                    table += build_entry(w, i, portrait)
+                else:
+                    e = bytearray(build_entry(w, i, portrait, template=tmpl,
+                                              field_override=tmpl[2]))
+                    e[1] = i & 0xFF
+                    e[2] = 0x15
+                    table += bytes(e)
+        elif bt == 0x8b:  # ProgressBar — colour (pure transform) or image-fill
+            table += build_entry(w, i, portrait, bar_images=bar_info.get(id(w)))
         else:
             table += build_entry(w, i, portrait)
 
@@ -862,9 +1096,18 @@ def _compile_from_scratch(uiw, parent, images_dir, base, extra_metric_bases,
     else:
         struct.pack_into(">H", out, 0x4c, bg_color565 or 0xF79E)
         out[0x50] = own_bg_flag
-        struct.pack_into(">I", out, 0x54, own_framecount)
-        # [0x53]: max frame count across bg + images (editor defaults to 1).
-        out[0x53] = max([1, own_framecount] + [v[1] for v in img_index.values()]) & 0xFF
+        # Descriptor frame fields (decoded from AnimatedBg.bin vs static blobs):
+        #   [0x52:0x54] BE16 = background frame count (1 static, N animated)
+        #   [0x53]      = same count's low byte (editor mirrors it here)
+        #   [0x54:0x58] BE32 = 0x0000<delay><01>: [0x56]=per-frame delay (ms/tick,
+        #                from <imageDelay>), [0x57]=0x01 constant. Static -> delay 0.
+        bg_frames = max(1, own_framecount)
+        struct.pack_into(">H", out, 0x52, bg_frames & 0xFFFF)
+        out[0x53] = max([bg_frames] + [v[1] for v in img_index.values()]) & 0xFF
+        out[0x54] = 0x00
+        out[0x55] = 0x00
+        out[0x56] = own_bg_delay & 0xFF
+        out[0x57] = 0x01
     out[WIDGET_TABLE_START:WIDGET_TABLE_START + len(table)] = table
 
     out += start_res

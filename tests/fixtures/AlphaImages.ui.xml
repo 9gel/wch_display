@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui>
+    <widgetParent type="1" objectName="background">
+        <geometry><x>10</x><y>10</y><width>480</width><height>800</height></geometry>
+        <backgroundType>1</backgroundType><backgroundColor>ff0c0e14</backgroundColor>
+        <backgroundImagePath>./images/bg.jpg</backgroundImagePath><imageDelay>0</imageDelay>
+    </widgetParent>
+    <widget type="4" globalID="1" sameTypeID="1" objectName="i1" parentName="background">
+        <geometry><x>20</x><y>60</y><width>200</width><height>64</height></geometry>
+        <isHide>0</isHide><imagePath>./images/alpha_narrow.png</imagePath><isEnable>1</isEnable><imageDelay>0</imageDelay>
+    </widget>
+    <widget type="4" globalID="2" sameTypeID="2" objectName="i2" parentName="background">
+        <geometry><x>20</x><y>200</y><width>400</width><height>100</height></geometry>
+        <isHide>0</isHide><imagePath>./images/alpha_wide.png</imagePath><isEnable>1</isEnable><imageDelay>0</imageDelay>
+    </widget>
+    <widget type="4" globalID="3" sameTypeID="3" objectName="i3" parentName="background">
+        <geometry><x>20</x><y>360</y><width>396</width><height>100</height></geometry>
+        <isHide>0</isHide><imagePath>./images/alpha_logo.png</imagePath><isEnable>1</isEnable><imageDelay>0</imageDelay>
+    </widget>
+    <widget type="2" globalID="4" sameTypeID="4" objectName="t4" parentName="background">
+        <geometry><x>20</x><y>20</y><width>360</width><height>38</height></geometry>
+        <isHide>0</isHide>
+        <font><text>ALPHA LAYOUT</text><fontName>Arial</fontName><fontColor>ffffe600</fontColor><fontSize>24</fontSize><bold>0</bold><italic>0</italic></font>
+        <characterSet>0</characterSet><isTransparent>1</isTransparent><isAutoLineBreak>0</isAutoLineBreak>
+        <backgroundColor>ffffffff</backgroundColor><hAlign>0</hAlign><vAlign>0</vAlign><isEnable>1</isEnable>
+    </widget>
+</ui>

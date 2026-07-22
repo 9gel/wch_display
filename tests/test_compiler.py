@@ -318,6 +318,200 @@ class TestDocumentedByteFacts(unittest.TestCase):
             self.assertTrue(all(b == 0 for b in e[20:]), "no extra flag bytes")
 
 
+# ---------------------------------------------------------------------------
+def _bt(name):
+    return os.path.exists(os.path.join(FIX, name + ".bin"))
+
+
+def _bg_records(b):
+    """Walk the JPEG records at 0x1000: list of record sizes (bytes)."""
+    off, out = 0x1000, []
+    while off + 4 <= len(b):
+        sz = struct.unpack_from(">I", b, off)[0]
+        if sz == 0 or b[off + 4:off + 6] != b"\xff\xd8":
+            break
+        out.append(sz)
+        off += 4 + sz
+    return out
+
+
+@unittest.skipUnless(_has_font() and _bt("AlphaImages"), "font/fixture missing")
+class TestAlphaPlanarResource(unittest.TestCase):
+    """GAP 1: transparent Image widgets use a PLANAR resource — the whole 8-bit
+    alpha plane (w*h) then the whole RGB565-LE colour plane (w*h*2), full-width
+    row-major. Byte-exact vs AlphaImages.bin (source pattern R=x,G=y,alpha=170)."""
+
+    IMG = os.path.join(FIX, "img_AlphaImages")
+
+    def test_alpha_image_resources_byte_exact(self):
+        ui = _read(os.path.join(FIX, "AlphaImages.ui.xml"))
+        ed = _read(os.path.join(FIX, "AlphaImages.bin"))
+        out = C.compile_ui_to_blob(ui, images_dir=self.IMG,
+                                   base_blob_for_resources=None, render_text=True)
+        uiw = [w for w in C.parse_ui(ui) if w["tag"] == "widget"
+               and C.UI2BLOB.get(w["type"]) == 0x84]
+        et = [e for e in _table(ed) if e[0] == 0x84]
+        ot = [e for e in _table(out) if e[0] == 0x84]
+        self.assertEqual(len(et), len(uiw))
+        for e, o, w in zip(et, ot, uiw):
+            n = w["width"] * w["height"] * 3
+            pe, po = _ptr(e), _ptr(o)
+            self.assertEqual(ed[pe:pe + n], out[po:po + n],
+                             f"{w['imagePath']} planar resource mismatch")
+
+    def test_alpha_plane_precedes_colour_plane(self):
+        # The first w*h bytes are the constant alpha (0xaa=170 in the source).
+        ed = _read(os.path.join(FIX, "AlphaImages.bin"))
+        e = [x for x in _table(ed) if x[0] == 0x84][0]
+        w, h = struct.unpack_from("<H", e, 8)[0], e[10]
+        p = _ptr(e)
+        self.assertTrue(all(b == 0xAA for b in ed[p:p + w * h]))
+
+
+@unittest.skipUnless(_bt("AnimatedBg"), "AnimatedBg fixture missing")
+class TestAnimatedBackground(unittest.TestCase):
+    """GAP 2: an animated background stores N JPEG records (one per folder frame)
+    + a zero terminator; descriptor [0x52:0x54]=frame count, [0x53]=count, and
+    [0x54:0x58]=0x0000<delay>01 where [0x56]=<imageDelay>. Verified vs AnimatedBg.bin."""
+
+    IMG = os.path.join(FIX, "img_AnimatedBg")
+
+    def test_editor_blob_is_four_frames(self):
+        ed = _read(os.path.join(FIX, "AnimatedBg.bin"))
+        self.assertEqual(len(_bg_records(ed)), 4)
+        self.assertEqual(struct.unpack_from(">H", ed, 0x52)[0], 4)
+        self.assertEqual(ed[0x53], 4)
+        self.assertEqual(ed[0x56], 200)     # imageDelay
+        self.assertEqual(ed[0x57], 0x01)
+
+    @unittest.skipUnless(os.path.isdir(os.path.join(FIX, "img_AnimatedBg", "BGA")),
+                         "anim frames missing")
+    def test_from_scratch_matches_records_and_descriptor(self):
+        ui = _read(os.path.join(FIX, "AnimatedBg.ui.xml"))
+        ed = _read(os.path.join(FIX, "AnimatedBg.bin"))
+        out = C.compile_ui_to_blob(ui, images_dir=self.IMG,
+                                   base_blob_for_resources=None, render_text=True)
+        self.assertEqual(_bg_records(out), _bg_records(ed))     # sizes byte-for-byte
+        self.assertEqual(struct.unpack_from(">H", out, 0x52)[0], 4)
+        self.assertEqual(out[0x53], 4)
+        self.assertEqual(out[0x56], 200)
+        self.assertEqual(out[0x57], 0x01)
+        # each embedded frame equals the source JPEG byte-for-byte
+        off_ed = off_o = 0x1000
+        for _ in range(4):
+            sz = struct.unpack_from(">I", ed, off_ed)[0]
+            self.assertEqual(struct.unpack_from(">I", out, off_o)[0], sz)
+            self.assertEqual(ed[off_ed + 4:off_ed + 4 + sz],
+                             out[off_o + 4:off_o + 4 + sz])
+            off_ed += 4 + sz
+            off_o += 4 + sz
+
+
+@unittest.skipUnless(_has_font() and _bt("DateTimeMatrix"), "font/fixture missing")
+class TestDateTimeFromScratch(unittest.TestCase):
+    """GAP 3: from-scratch DateTime (0x8e). Glyph strip = atlas of 10 digits +
+    '.' '-' ':' ' ' '/' + 6 px-wide cells; tail [15:19]=BE32 ptr, [19:21]=strip_h,
+    [21:45]=12 advances, [45:64]=inline format skeleton. Only the safe skeleton
+    formats are emitted. Verified vs DateTimeMatrix.bin (sizes 16/24/40)."""
+
+    def setUp(self):
+        self.ui = _read(os.path.join(FIX, "DateTimeMatrix.ui.xml"))
+        self.ed = _read(os.path.join(FIX, "DateTimeMatrix.bin"))
+        self.out = C.compile_ui_to_blob(self.ui, images_dir=None,
+                                        base_blob_for_resources=None,
+                                        render_text=True)
+        self.et = [e for e in _table(self.ed) if e[0] == 0x8e]
+        self.ot = [e for e in _table(self.out) if e[0] == 0x8e]
+
+    def _adv(self, e):
+        return [struct.unpack_from(">H", e, 21 + 2 * k)[0] for k in range(12)]
+
+    def test_no_warnings_safe_formats(self):
+        self.assertEqual(C.last_warnings(), [])
+
+    def test_geometry_halign_advances_format_match(self):
+        self.assertEqual(len(self.et), len(self.ot))
+        for e, o in zip(self.et, self.ot):
+            self.assertEqual(e[0], o[0])
+            self.assertEqual(e[3:11], o[3:11], "geometry")
+            self.assertEqual(e[11], o[11], "hAlign")
+            self.assertEqual(e[45:64], o[45:64], "format skeleton")
+            self.assertEqual(self._adv(e), self._adv(o), "advances")
+
+    def test_strip_height_within_1px(self):
+        for e, o in zip(self.et, self.ot):
+            eh = struct.unpack_from(">H", e, 19)[0]
+            oh = struct.unpack_from(">H", o, 19)[0]
+            self.assertLessEqual(abs(eh - oh), 1)
+
+    def test_strip_width_byte_exact(self):
+        for sz, w in ((16, 277), (24, 419), (40, 686)):
+            strip, h, _ = C.render_datetime_strip(sz, 0, 0)
+            self.assertEqual(len(strip) // h, w, f"size {sz} strip width")
+
+    def test_skeletons_only(self):
+        self.assertEqual(C.datetime_format_skeleton("yyyy-mm-dd hh:nn:ss"),
+                         "1-2-3 4:5:6")
+        self.assertEqual(C.datetime_format_skeleton("hh:nn:ss"), "4:5:6")
+        self.assertEqual(C.datetime_format_skeleton("yyyy/mm/dd"), "1/2/3")
+        self.assertIsNone(C.datetime_format_skeleton("dd MMM yyyy freeform"))
+
+    def test_unsupported_format_warns_without_base(self):
+        ui = self.ui.replace(b"yyyy/mm/dd", b"dd.MMMM.yyyy")
+        C.compile_ui_to_blob(ui, images_dir=None,
+                             base_blob_for_resources=None, render_text=True)
+        self.assertTrue(any("not a supported" in w for w in C.last_warnings()))
+
+
+@unittest.skipUnless(_has_font() and _bt("ImageBarVal"), "font/fixture missing")
+class TestImageFillBar(unittest.TestCase):
+    """GAP 4: image-fill ProgressBar (0x8b). showType=1 -> [11]=0 (image mode);
+    tail = 3 colours + bg (w BE16, h BE16, ptr BE32) + fg (w,h,ptr). fg must be
+    shorter than bg. showType=0 stays a colour bar ([11]=1). Verified vs
+    ImageBarVal.bin (works) and ImageBar.bin (colour-mode)."""
+
+    IMG = os.path.join(FIX, "img_ImageBarVal")
+
+    def _bar(self, b):
+        return [e for e in _table(b) if e[0] == 0x8b][0]
+
+    def test_image_fill_flag_and_tail(self):
+        ui = _read(os.path.join(FIX, "ImageBarVal.ui.xml"))
+        ed = _read(os.path.join(FIX, "ImageBarVal.bin"))
+        out = C.compile_ui_to_blob(ui, images_dir=self.IMG,
+                                   base_blob_for_resources=None, render_text=True)
+        e, o = self._bar(ed), self._bar(out)
+        self.assertEqual(o[11], 0, "image-fill marks [11]=0")
+        self.assertEqual(e[11], o[11])
+        # colours [12:18], bg/fg sizes [18:22]/[26:30] byte-exact (ptrs differ)
+        self.assertEqual(e[12:22], o[12:22], "colours + bg size")
+        self.assertEqual(e[26:30], o[26:30], "fg size")
+        bgw = struct.unpack_from(">H", o, 18)[0]
+        fgw = struct.unpack_from(">H", o, 26)[0]
+        self.assertLess(fgw, bgw, "fg must be shorter than bg")
+
+    def test_image_ptrs_land_in_resource_area(self):
+        ui = _read(os.path.join(FIX, "ImageBarVal.ui.xml"))
+        out = C.compile_ui_to_blob(ui, images_dir=self.IMG,
+                                   base_blob_for_resources=None, render_text=True)
+        o = self._bar(out)
+        clen = struct.unpack_from(">I", out, 0x58)[0]
+        bgptr = struct.unpack_from(">I", o, 22)[0]
+        fgptr = struct.unpack_from(">I", o, 30)[0]
+        bgw, bgh = struct.unpack_from(">H", o, 18)[0], struct.unpack_from(">H", o, 20)[0]
+        fgw, fgh = struct.unpack_from(">H", o, 26)[0], struct.unpack_from(">H", o, 28)[0]
+        self.assertEqual(fgptr - bgptr, bgw * bgh * 2, "fg follows bg (RGB565)")
+        self.assertLessEqual(fgptr + fgw * fgh * 2, clen, "fg fits in blob")
+
+    def test_showtype0_is_colour_bar(self):
+        # ImageBar.ui has showType=0 -> the editor kept a colour bar ([11]=1)
+        # even though it set bg/fg image paths; we must reproduce that.
+        ui = _read(os.path.join(FIX, "ImageBar.ui.xml"))
+        out = C.compile_ui_to_blob(ui, images_dir=os.path.join(FIX, "img_ImageBarVal"),
+                                   base_blob_for_resources=None, render_text=True)
+        self.assertEqual(self._bar(out)[11], 1, "showType=0 -> colour bar")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

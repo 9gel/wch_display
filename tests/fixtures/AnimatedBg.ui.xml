@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui>
+    <widgetParent type="1" objectName="background">
+        <geometry><x>10</x><y>10</y><width>480</width><height>800</height></geometry>
+        <backgroundType>1</backgroundType><backgroundColor>ff0c0e14</backgroundColor>
+        <backgroundImagePath>./images/BGA/anim_0.jpg</backgroundImagePath><imageDelay>200</imageDelay>
+    </widgetParent>
+    <widget type="2" globalID="1" sameTypeID="1" objectName="t1" parentName="background">
+        <geometry><x>20</x><y>20</y><width>360</width><height>38</height></geometry>
+        <isHide>0</isHide>
+        <font><text>ANIM BG (4 frames)</text><fontName>Arial</fontName><fontColor>ffffe600</fontColor><fontSize>24</fontSize><bold>0</bold><italic>0</italic></font>
+        <characterSet>0</characterSet><isTransparent>1</isTransparent><isAutoLineBreak>0</isAutoLineBreak>
+        <backgroundColor>ffffffff</backgroundColor><hAlign>0</hAlign><vAlign>0</vAlign><isEnable>1</isEnable>
+    </widget>
+</ui>

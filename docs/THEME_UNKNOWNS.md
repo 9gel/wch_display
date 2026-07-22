@@ -114,21 +114,32 @@ dp/sign glyph, alignment), so we can emit numbers at any size from scratch.
 `hAlign` at `[11]`; `isDiv1204` has **no** effect on the widget entry bytes (a
 render-time value-scaling hint, not stored).
 
-**P1c — DateTime (0x8e).** PARTIALLY decoded (`TextStylesDateTime.bin`):
+**P1c — DateTime (0x8e).** RESOLVED byte-exact (`DateTimeMatrix.bin`, sizes
+16/24/40, formats `yyyy-mm-dd hh:nn:ss` / `hh:nn:ss` / `yyyy/mm/dd`, hAlign 0/2):
 - Field id fixed `0x15`/21 (confirmed); `[11]` = **hAlign** — DateTime's
   **right-align (2) works on-panel** (StaticText's right-align does NOT render).
-- Tail mirrors Number: `[12:14]` color, `[17:20]` BE24 ptr to a glyph strip
-  (digits + `-`, ` `, `:` separators), `[20:...]` strip_h + advances (BE u16).
+- Tail (differs from Number — note the **32-bit** ptr): `[12:14]` color RGB565 BE;
+  `[14]=0xff`; `[15:19]` = **BE32** ptr to the glyph strip; `[19:21]` strip_h (BE16
+  = FreeType ascent+descent); `[21:45]` = **12 advances** (BE16) = the 6 real glyph
+  advances `0` `.` `-` `:` ` ` `/` then **6 × px** (px = round(fontSize*4/3)).
+- **Glyph strip** = glyph-major 8-bpp atlas of the 10 digits `0`..`9`, then
+  `.` `-` `:` ` ` `/`, then 6 px-wide (blank) field cells; each glyph an
+  `advance × strip_h` block. Strip width matches byte-exact (277/419/686 for
+  16/24/40 = 10·digit + `.`+`-`+`:`+` `+`/` + 6·px). Advances match FreeType
+  exactly; strip_h within ±1px (same ~1px AA gap as Numbers).
 - **Format is packed inline in the entry tail** starting at `[45]`, only ~19
-  bytes of room (`[45:64]`): `yyyy-mm-dd hh:nn:ss` → skeleton `"1-2-3 4:5:6"`
-  (digits 1..6 = year/month/day/hour/min/sec field slots; literals verbatim).
+  bytes of room (`[45:64]`): `yyyy-mm-dd hh:nn:ss` → skeleton `"1-2-3 4:5:6"`,
+  `hh:nn:ss` → `"4:5:6"`, `yyyy/mm/dd` → `"1/2/3"` (digits 1..6 = year/month/day/
+  hour/min/sec field slots; literals verbatim), NUL-padded.
 - **CRASH WARNING — a freeform `dateTimeFormat` (not the built-in skeleton) black-
   screens the panel.** `TextStylesDateTime_badformat.bin` shows the freeform text
   written straight into `[45:64]`, **overrunning the 19-byte region** (its last
-  byte `[63]` is non-zero / unterminated) — that overflow is what crashes. The
-  compiler therefore only REUSES a base DateTime entry (never synthesises one);
-  if it ever emits DateTime, it must restrict formats to the safe skeleton set and
-  guarantee the skeleton fits `[45:64]` NUL-terminated.
+  byte `[63]` is non-zero / unterminated) — that overflow is what crashes.
+- **Implemented from-scratch** in `compiler.py` (`render_datetime_strip` +
+  `datetime_format_skeleton`), restricted to the safe skeleton set above. Any
+  other format returns `None` and falls back to REUSING a base entry (a base blob
+  is then required); with no base it warns and emits a non-rendering geometry-only
+  entry rather than risk the crash.
 
 ---
 
@@ -178,36 +189,52 @@ likely to be used in polish (and to brick).
   `[12:15]` BE24. **Frame count is byte `[16]`** (1=static, N=animation) and the
   **static/anim flag is byte `[17]`** (`0x01` static, `0x00` animated); `[15]`=0.
   (Earlier notes said count`[15]`/flag`[16]` — off by one; corrected.)
-- Frames are stored **consecutively**: opaque source = RGB565 `w*h*2`/frame;
-  transparent PNG = RGB565+8-bit-alpha `w*h*3`/frame. `w,h` = the widget display
-  size (source rescaled). Verified byte-exact on SysStatus: WIDE_PATH 480×200×2×9
-  = 1,728,000; rounded_rect_tall 230×95×3; cyber_status 396×100×3.
+- Frames are stored **consecutively**. Opaque source = RGB565 `w*h*2`/frame
+  (verified on SysStatus: WIDE_PATH 480×200×2×9 = 1,728,000).
+- **Transparent PNG = PLANAR `w*h*3`/frame** — the whole 8-bit **alpha plane**
+  (`w*h`) then the whole **RGB565-LE colour plane** (`w*h*2`), both **full-width
+  row-major** (NO band-slicing; the wide-transform only touches the entry's stored
+  w). RESOLVED byte-exact vs `AlphaImages.bin` (source R=x,G=y,alpha=170) for
+  narrow 200×64, **wide 400×100** and logo 396×100. **CORRECTION: the earlier
+  per-pixel `[colorLo,colorHi,alpha]` interleave was WRONG** — it rendered logos
+  invisible / panels mis-tinted; the editor stores the two planes separately.
+  `w,h` = the widget display size (source rescaled).
 - A folder animation (`wide_path_0.jpg`, `_1`, …) loads all numeric siblings in
-  the folder, sorted. **Per-frame delay** is not in the entry tail (still open;
-  `<imageDelay>` in the .ui, animation speed likely global / undecoded).
-- **Implemented from-scratch** in `compiler.py` (`render_image_resource`).
+  the folder, sorted. **Per-frame delay** is not in the *Image* entry tail
+  (`<imageDelay>`); for the **background** animation the delay IS decoded — see P3d.
+- **Implemented from-scratch** in `compiler.py` (`render_image_resource`, planar).
 
-**P3b — Image-filled ProgressBar.** DECODED (`TextStylesDateTime_img-progress.bin`).
-A ProgressBar with `<bgImagePath>`/`<fgImagePath>` stores, after the 3 RGB565 BE
-colours `[12:18]`, **two image references** as `w(BE16) h(BE16) ptr(BE24)` triples:
-`[18:20]` bg w, `[20:22]` bg h, `[22:25]` bg BE24 ptr; `[25:27]` fg w, `[27:29]`
-fg h, `[29:32]` fg BE24 ptr (raw pixels in the resource area like Image widgets).
-A bar with only a bg image (`<bgImagePath>` set, no fg) stores just the bg triple.
-**The bar SIZE follows the bg image size** (the `w/h/x/y` come from the bg image,
-not the `.ui` box), and **the fill is AUTO-ANIMATED**: the fg image scrolls
-left→right, wrapping/looping — it is **not** driven by the bound field value
-(unlike a solid-colour bar, which fills `value` as a percent 0..100). Frame/scroll
-timing is not in the entry tail (global / undecoded). Implementation is optional;
-a solid-colour bar remains the simple, value-driven choice.
+**P3b — Image-filled ProgressBar.** RESOLVED byte-exact (`ImageBarVal.bin` works
+vs `ImageBar.bin` broken). The **fill-mode flag is byte `[11]`**: `0x01` = colour
+(value-driven) bar, `0x00` = image-fill. The `.ui` `<style>` selects it:
+**`showType=1` + `bgImagePath` + `fgImagePath` → image-fill (`[11]=0`)**; `showType=0`
+stays a colour bar (`[11]=1`) even with image paths — this is exactly why the
+`showType=0` attempt (`ImageBar.bin`, `[11]=1`) never scrolled. Tail after the 3
+RGB565 BE colours `[12:18]`: `[18:20]` bg w (BE16), `[20:22]` bg h, `[22:26]` bg
+resource ptr (**BE32**); `[26:28]` fg w, `[28:30]` fg h, `[30:34]` fg ptr (BE32).
+Both images are **opaque RGB565 LE** raw pixels (bg then fg, `w*h*2` each). The bar
+geometry `[3:11]` is the normal `ui_to_blob_xy` of the `.ui` box (matches byte-exact;
+not the image size). **The fg image MUST be shorter (narrower) than the bg image**
+for the auto-scroll fill to animate (verified: ImageBarVal fg 167 < bg 300 works;
+ImageBar's equal-width fg didn't) — it is **not** value-driven. Frame/scroll timing
+is global (undecoded). **Implemented from-scratch** (`render_bar_image`, `showType=1`
+→ `[11]=0`; warns if `fg ≥ bg`). A solid-colour bar remains the value-driven choice.
 
 **P3c — ProgressBar `showType`.** We've only seen `showType=0`. Author bars with
 each other `showType` the editor allows (vertical? right-to-left? segmented?),
 and a `frameColor` clearly different from bg to see border rendering.
 
-**P3d — Animated background.** If the editor supports a multi-frame background
-(the `Flash-animated` capture had 125 JPEG records), author a short animated bg
-and note frame count + delay controls → confirm descriptor `[0x54]` framecount
-and where per-frame delay lives.
+**P3d — Animated background.** RESOLVED (`AnimatedBg.bin`, 4 frames, delay 200).
+A folder bg (`./images/BGA/anim_0.jpg` + numeric siblings) stores **one JPEG record
+per frame** at `0x1000`, in numeric order, **terminated by a zero-size record**;
+each frame embedded byte-for-byte (record sizes match the source JPEGs). Descriptor:
+**`[0x52:0x54]` BE16 = frame count** (mirrored at `[0x53]`), **`[0x54:0x58]` =
+`0x0000<delay>01`** where **`[0x56]` = per-frame delay** (the `.ui` `<imageDelay>`,
+e.g. 200) and `[0x57]=0x01` constant. A static bg = count 1, delay 0. `[0x50]=0x10`
+whenever a bg record is present. **Implemented from-scratch** (`_compile_from_scratch`
+resolves the bg folder's frame siblings, embeds each JPEG, sets count + delay).
+NB the current from-scratch code writes framecount to `[0x52:0x54]` (was previously
+left 0 for static — a latent mismatch that didn't brick, now corrected to match).
 
 ---
 
@@ -232,15 +259,19 @@ and where per-frame delay lives.
 | ProgressBar color layout; percent-fill 0..100 render | CONFIRMED |
 | StaticText color + ptr; mask format; bold/italic; opaque bg; underline no-op | CONFIRMED |
 | Number(0x92) digit strip + metric tail (from-scratch) | CONFIRMED byte-exact |
-| DateTime(0x8e) align + inline format skeleton; freeform-format crash | PARTIAL → reuse base |
-| Image widget + animation encoding | CONFIRMED (P3) |
-| image-filled ProgressBar (bg/fg image refs, auto-scroll fill) | DECODED; impl optional |
-| ProgressBar showType variants | UNKNOWN (P3) |
+| DateTime(0x8e) glyph strip + metric tail + inline format (from-scratch, safe skeletons) | CONFIRMED byte-exact; freeform → reuse base |
+| Image widget opaque encoding | CONFIRMED byte-exact (P3) |
+| Image widget alpha encoding (PLANAR alpha-plane then colour-plane) | CONFIRMED byte-exact (P3a) |
+| animated background (N JPEG records + framecount [0x52] + delay [0x56]) | CONFIRMED byte-exact (P3d) |
+| image-filled ProgressBar (bg/fg refs, [11]=0 flag, showType=1, fg<bg scroll) | CONFIRMED byte-exact (P3b) |
+| ProgressBar showType: 0=colour bar, 1=image-fill | CONFIRMED (other variants UNKNOWN) |
 | landscape / orientation matrix | PARTIAL (P4) |
 
 The from-scratch path (`render_text=True`) can now emit StaticText, **Number**,
-and Image widgets without a base blob; only **DateTime** still needs a base (its
-format skeleton is only partially decoded and a wrong format **crashes the
-panel** — see P1c). The `render_text=False` reuse path stays byte-exact. Never
-flash a from-scratch blob without validating it in the editor first, and keep the
-firmware recovery frames handy (`PROTOCOL_NOTES.md` → recovery).
+**Image** (opaque + planar-alpha), **animated backgrounds**, **DateTime** (safe
+skeleton formats), and **image-fill ProgressBars** without a base blob. Only a
+DateTime with an **unsupported/freeform** format still needs a base to reuse (a
+wrong format **crashes the panel** — see P1c). The `render_text=False` reuse path
+stays byte-exact. Never flash a from-scratch blob without validating it in the
+editor first, and keep the firmware recovery frames handy (`PROTOCOL_NOTES.md` →
+recovery).

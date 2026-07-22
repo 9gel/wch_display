@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui>
+    <widgetParent type="1" objectName="background">
+        <geometry><x>10</x><y>10</y><width>480</width><height>800</height></geometry>
+        <backgroundType>1</backgroundType><backgroundColor>ff0c0e14</backgroundColor>
+        <backgroundImagePath>./images/bg.jpg</backgroundImagePath><imageDelay>0</imageDelay>
+    </widgetParent>
+    <widget type="6" globalID="1" sameTypeID="1" objectName="dt1" parentName="background">
+        <geometry><x>20</x><y>60</y><width>440</width><height>26</height></geometry>
+        <isEnable>1</isEnable><isHide>0</isHide>
+        <font><text>2026-07-22 12:34:56</text><fontName>Arial</fontName><fontColor>ff00e5ff</fontColor><fontSize>16</fontSize><bold>0</bold><italic>0</italic></font>
+        <backgroundColor>fff0f0f0</backgroundColor><isTransparent>1</isTransparent>
+        <dateTimeFormat>yyyy-mm-dd hh:nn:ss</dateTimeFormat><hAlign>0</hAlign><vAlign>1</vAlign>
+    </widget>
+    <widget type="6" globalID="2" sameTypeID="2" objectName="dt2" parentName="background">
+        <geometry><x>20</x><y>120</y><width>440</width><height>38</height></geometry>
+        <isEnable>1</isEnable><isHide>0</isHide>
+        <font><text>2026-07-22 12:34:56</text><fontName>Arial</fontName><fontColor>ff00e5ff</fontColor><fontSize>24</fontSize><bold>0</bold><italic>0</italic></font>
+        <backgroundColor>fff0f0f0</backgroundColor><isTransparent>1</isTransparent>
+        <dateTimeFormat>yyyy-mm-dd hh:nn:ss</dateTimeFormat><hAlign>0</hAlign><vAlign>1</vAlign>
+    </widget>
+    <widget type="6" globalID="3" sameTypeID="3" objectName="dt3" parentName="background">
+        <geometry><x>20</x><y>200</y><width>440</width><height>62</height></geometry>
+        <isEnable>1</isEnable><isHide>0</isHide>
+        <font><text>2026-07-22 12:34:56</text><fontName>Arial</fontName><fontColor>ff00e5ff</fontColor><fontSize>40</fontSize><bold>0</bold><italic>0</italic></font>
+        <backgroundColor>fff0f0f0</backgroundColor><isTransparent>1</isTransparent>
+        <dateTimeFormat>yyyy-mm-dd hh:nn:ss</dateTimeFormat><hAlign>0</hAlign><vAlign>1</vAlign>
+    </widget>
+    <widget type="6" globalID="4" sameTypeID="4" objectName="dt4" parentName="background">
+        <geometry><x>20</x><y>320</y><width>440</width><height>38</height></geometry>
+        <isEnable>1</isEnable><isHide>0</isHide>
+        <font><text>2026-07-22 12:34:56</text><fontName>Arial</fontName><fontColor>ff00e5ff</fontColor><fontSize>24</fontSize><bold>0</bold><italic>0</italic></font>
+        <backgroundColor>fff0f0f0</backgroundColor><isTransparent>1</isTransparent>
+        <dateTimeFormat>yyyy-mm-dd hh:nn:ss</dateTimeFormat><hAlign>2</hAlign><vAlign>1</vAlign>
+    </widget>
+    <widget type="6" globalID="5" sameTypeID="5" objectName="dt5" parentName="background">
+        <geometry><x>20</x><y>400</y><width>440</width><height>38</height></geometry>
+        <isEnable>1</isEnable><isHide>0</isHide>
+        <font><text>2026-07-22 12:34:56</text><fontName>Arial</fontName><fontColor>ff00e5ff</fontColor><fontSize>24</fontSize><bold>0</bold><italic>0</italic></font>
+        <backgroundColor>fff0f0f0</backgroundColor><isTransparent>1</isTransparent>
+        <dateTimeFormat>hh:nn:ss</dateTimeFormat><hAlign>0</hAlign><vAlign>1</vAlign>
+    </widget>
+    <widget type="6" globalID="6" sameTypeID="6" objectName="dt6" parentName="background">
+        <geometry><x>20</x><y>480</y><width>440</width><height>38</height></geometry>
+        <isEnable>1</isEnable><isHide>0</isHide>
+        <font><text>2026-07-22 12:34:56</text><fontName>Arial</fontName><fontColor>ff00e5ff</fontColor><fontSize>24</fontSize><bold>0</bold><italic>0</italic></font>
+        <backgroundColor>fff0f0f0</backgroundColor><isTransparent>1</isTransparent>
+        <dateTimeFormat>yyyy/mm/dd</dateTimeFormat><hAlign>0</hAlign><vAlign>1</vAlign>
+    </widget>
+    <widget type="2" globalID="7" sameTypeID="7" objectName="t7" parentName="background">
+        <geometry><x>20</x><y>20</y><width>360</width><height>38</height></geometry>
+        <isHide>0</isHide>
+        <font><text>DATETIME</text><fontName>Arial</fontName><fontColor>ffffe600</fontColor><fontSize>24</fontSize><bold>0</bold><italic>0</italic></font>
+        <characterSet>0</characterSet><isTransparent>1</isTransparent><isAutoLineBreak>0</isAutoLineBreak>
+        <backgroundColor>ffffffff</backgroundColor><hAlign>0</hAlign><vAlign>0</vAlign><isEnable>1</isEnable>
+    </widget>
+</ui>

@@ -204,9 +204,14 @@ by BE24 byte offsets from blob start.
 resource area, `frame_count` frames stored consecutively:
 - **opaque** image (e.g. a JPEG/GIF source): **RGB565, `w*h*2` bytes/frame**
   (verified: WIDE_PATH 9 frames × 480×200×2 = 1,728,000 B).
-- **alpha** image (PNG w/ transparency): **`w*h*3` bytes/frame = RGB565 (2) + 8-bit
-  alpha (1) per pixel** (verified: 230×60×3=41,400; 198×50×3=29,700). This is how
-  translucent panels / transparent-background logos composite over the background.
+- **alpha** image (PNG w/ transparency): **PLANAR, `w*h*3` bytes/frame** — the whole
+  **8-bit alpha plane (`w*h` bytes)** first, then the whole **RGB565 little-endian
+  colour plane (`w*h*2` bytes)**, both **full-width row-major** (no band-slicing;
+  the wide-transform only affects the widget entry's stored w). CONFIRMED byte-exact
+  against `AlphaImages.bin` (source pattern R=x,G=y,alpha=170 → every stored pixel
+  reveals its coordinate) for a narrow (200×64), wide (400×100) and logo (396×100)
+  image. **NB: an earlier per-pixel `[colorLo,colorHi,alpha]` interleave was WRONG**
+  (logos rendered invisible, panels mis-tinted); the editor is planar.
   `w,h` are the widget's *display* size (the editor rescales the source to fit).
 
 **Consequences for authoring:**
@@ -220,6 +225,19 @@ resource area, `frame_count` frames stored consecutively:
 fgColor, `[16:18]` frameColor (all RGB565 BE), then a u16 at `[18:20]` and again
 at `[26:28]` that is a **constant editor default** (`0x76a0`=30368 / `0xb910`=47376
 depending on editor version) — *not* a per-bar range. It has no effect on fill.
+Byte `[11]` = **fill mode**: `0x01` = colour (value-driven) bar, `0x00` = image-fill.
+
+**Image-fill ProgressBar** (`0x8b` with `[11]=0`). CONFIRMED byte-exact
+(`ImageBarVal.bin`, works) vs a broken attempt (`ImageBar.bin`, didn't scroll).
+The `.ui` `<style>` distinguishes them: **`showType=1` + `bgImagePath` + `fgImagePath`
+→ image-fill (`[11]=0`)**; `showType=0` stays a colour bar (`[11]=1`) even if image
+paths are set (this is exactly why the `showType=0` attempt didn't animate). Tail
+after the 3 colours: `[18:20]` bg image w (BE16), `[20:22]` bg h, `[22:26]` bg
+resource ptr (**BE32**); `[26:28]` fg w, `[28:30]` fg h, `[30:34]` fg ptr (BE32).
+Both images are **opaque RGB565 LE** raw pixels in the resource area (bg then fg,
+`w*h*2` each). The bar geometry `[3:11]` is the normal `ui_to_blob_xy` of the `.ui`
+box. **The fg image MUST be shorter (narrower) than the bg image** for the auto-
+scroll fill to animate (fg scrolls across the bg, wrapping); it is not value-driven.
 
 ### How a bound widget updates (verified on-panel)
 Byte `[2]` = the `0x66` fast-field id (`== <fastSensor>`; `0` = unbound/static).
@@ -263,20 +281,42 @@ pointer, `[20:22]`=strip_height and `[22:46]`=12 glyph advances (BE u16). Advanc
 equal FreeType `getlength()` at pixel size `round(fontSize*4/3)`; strip_height =
 `ascent+descent`. The compiler renders these from scratch (Liberation Sans).
 
-**DateTime (0x8e) — partial.** Same tail shape as Number (glyph strip + advances),
-plus the **date/time format packed inline in `[45:64]`** (`yyyy-mm-dd hh:nn:ss` →
-`"1-2-3 4:5:6"`). Right-align (`[11]`=2) works on-panel (StaticText right-align
-does not). **A freeform `dateTimeFormat` overruns `[45:64]` and BLACK-SCREENS the
-panel** — only the built-in skeleton is safe. The compiler never synthesises
-DateTime; it reuses a base entry, so a base blob is required only when a `.ui`
-contains a DateTime widget.
+**DateTime (0x8e) — DECODED, synthesisable (safe skeletons only).** Tail
+(`DateTimeMatrix.bin`, sizes 16/24/40): `[12:14]` fontColor RGB565 BE; `[14]=0xff`;
+`[15:19]` = **BE32** pointer to the glyph strip (NB 32-bit, unlike Number's 24-bit
+`[17:20]`); `[19:21]` strip_height (BE16 = FreeType ascent+descent); `[21:45]` =
+**12 advances** (BE16): the 6 real glyph advances `0` `.` `-` `:` ` ` `/` followed
+by **6 × px** cells (px = `round(fontSize*4/3)`); `[45:64]` = the inline format
+skeleton, NUL-terminated. The **glyph strip** is a glyph-major 8-bpp atlas of the
+10 digits `0`..`9`, then `.` `-` `:` ` ` `/`, then 6 px-wide field-slot cells — each
+an `advance × strip_h` block (strip width verified byte-exact: 277/419/686 for sizes
+16/24/40). Advances match FreeType `getlength()` exactly; strip_h within ±1px.
+`[11]` = hAlign (right-align `2` works on-panel; StaticText right-align does not).
+**Format is packed inline in `[45:64]`** (`yyyy-mm-dd hh:nn:ss` → `"1-2-3 4:5:6"`,
+`hh:nn:ss` → `"4:5:6"`, `yyyy/mm/dd` → `"1/2/3"`; year=1 month=2 day=3 hour=4 min=5
+sec=6, literals verbatim). **A freeform `dateTimeFormat` overruns `[45:64]` and
+BLACK-SCREENS the panel** — so the compiler emits DateTime from scratch **only for
+these safe skeletons**; any other format falls back to reusing a base entry (a base
+blob is then required), and warns if no base is available.
+
+**Animated background — DECODED** (`AnimatedBg.bin`). A folder bg
+(`./images/BGA/anim_0.jpg` with numeric siblings) stores **one JPEG record per frame**
+at `0x1000`, in numeric order, **terminated by a zero-size record**; each frame is
+embedded byte-for-byte (verified: 4 records, sizes match the source JPEGs). The
+descriptor carries the frame count at **`[0x52:0x54]` BE16** (and mirrored at
+`[0x53]`), and **`[0x54:0x58]` = `0x0000<delay>01`** where **`[0x56]` = per-frame
+delay** (from the `.ui` `<imageDelay>`, e.g. 200) and `[0x57]=0x01` (constant); a
+static bg has count 1 and delay 0. `[0x50]=0x10` whenever a bg record is present.
 
 The compiler (`csm_panel/theme/compiler.py`) rebuilds the descriptor + widget
 table from a `.ui`. Its `render_text=False` reuse path copies a known-good base
 blob's records + resource area verbatim and reproduces a real vendor blob
 **byte-for-byte**. Its `render_text=True` from-scratch path now synthesises
-StaticText masks, **Number digit strips**, and Image pixels with no base blob
-(DateTime still needs one, per above).
+StaticText masks, **Number digit strips**, **Image pixels** (opaque + planar-alpha),
+**animated backgrounds** (multi-frame JPEG records + delay), **DateTime** (glyph
+strip + metric tail + inline format, for the safe skeletons only), and **image-fill
+ProgressBars** (bg/fg RGB565 refs, `showType=1`→`[11]=0`, fg<bg) with no base blob.
+DateTime with an unsupported/freeform format still needs a base to reuse.
 
 ## History / dead-ends (condensed)
 Earlier we mis-identified this as a UsbPCMonitor/Turing/XuanFang "smart screen"
