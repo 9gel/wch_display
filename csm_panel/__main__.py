@@ -37,12 +37,17 @@ def main(argv=None):
 
     p_com = sub.add_parser("ui-compile", help="compile a .ui theme into a flashable blob")
     p_com.add_argument("ui", help="the .ui theme file (encrypted)")
-    p_com.add_argument("base", help="a known-good base blob (same resolution) for glyph resources")
+    p_com.add_argument("base", nargs="?", default=None,
+                       help="a known-good base blob (same resolution). REQUIRED for "
+                            "reuse mode; with --render-text it is optional and only "
+                            "used to source glyphs for DateTime widgets with a "
+                            "freeform (non-skeleton) format.")
     p_com.add_argument("-o", "--output", default="theme.bin")
-    p_com.add_argument("--images", help="theme images dir (for a new background JPEG)")
+    p_com.add_argument("--images", help="theme images dir (for backgrounds + Image widgets)")
     p_com.add_argument("--render-text", action="store_true",
-                       help="render StaticText masks + author from scratch "
-                            "(base blob used only for Number/DateTime metrics)")
+                       help="author everything from scratch (StaticText masks, Number/"
+                            "DateTime glyph strips, images). Needs Pillow + Liberation "
+                            "Sans. No base blob required.")
 
     args = ap.parse_args(argv)
     cfg = cfgmod.load(args.config)
@@ -99,19 +104,16 @@ def main(argv=None):
 
     if cmd == "ui-compile":
         from .theme import decode, compile_ui_to_blob
+        if not args.render_text and not args.base:
+            print("error: reuse mode needs a base blob; pass one, or use --render-text",
+                  file=sys.stderr)
+            return 2
         ui = decode(open(args.ui, "rb").read())
-        base = open(args.base, "rb").read()
-        if args.render_text:
-            # NOTE: Number/DateTime glyph metrics need a (base_blob, base_ui) pair
-            # to key the metric library by font size; the CLI only has the base
-            # blob, so those metrics are left zero (a warning is emitted). Solid/
-            # image backgrounds and StaticText masks are fully authored.
-            blob = compile_ui_to_blob(ui, args.images, base, render_text=True)
-            from .theme.compiler import last_warnings
-            for wmsg in last_warnings():
-                print("warning:", wmsg, file=sys.stderr)
-        else:
-            blob = compile_ui_to_blob(ui, args.images, base, render_text=False)
+        base = open(args.base, "rb").read() if args.base else None
+        blob = compile_ui_to_blob(ui, args.images, base, render_text=args.render_text)
+        from .theme.compiler import last_warnings
+        for wmsg in last_warnings():
+            print("warning:", wmsg, file=sys.stderr)
         with open(args.output, "wb") as f:
             f.write(blob)
         print(f"wrote {args.output} ({len(blob)} bytes)")

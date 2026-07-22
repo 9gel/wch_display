@@ -15,7 +15,12 @@ python3Packages.buildPythonApplication {
   inherit src;
 
   build-system = [ python3Packages.hatchling ];
-  dependencies = [ python3Packages.pyserial ];
+  # pyserial: the serial driver. pillow: from-scratch theme compile (render_text)
+  # renders StaticText/Number/DateTime glyph masks + converts images. Liberation
+  # Sans (the editor's "Arial") is discovered from the Nix store at compile time,
+  # so a consumer that runs `ui-compile --render-text` must put a liberation font
+  # package on the build/runtime closure (see the theme derivation in the README).
+  dependencies = [ python3Packages.pyserial python3Packages.pillow ];
 
   pythonImportsCheck = [ "csm_panel" "csm_panel.theme" ];
 
