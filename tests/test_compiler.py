@@ -320,3 +320,24 @@ class TestDocumentedByteFacts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestStaticTextWideBoxY(unittest.TestCase):
+    """Regression: a StaticText's stored y/width derive from the MASK width only.
+    Previously the wide-band wrap was applied twice (box width via ui_to_blob_xy,
+    then mask width), pushing wide-box labels a band down -> on-panel noise."""
+
+    def test_wide_box_narrow_and_wide_mask_y(self):
+        from csm_panel.theme.compiler import build_entry
+        base = dict(x=20, height=42, fastSensor=0, fontColor="ff00e5ff",
+                    bgColor="ff000000", fgColor="ff000000", frameColor="ff000000",
+                    text="x", fontSize=28, bold=0, italic=0, hAlign=0, imageDelay=0)
+        # wide box (380 > 256) but NARROW mask (75): y must be uy%256 (+256*0)
+        w = dict(base, y=10, width=380, type=2)
+        e = build_entry(w, 1, True, mask_w=75, mask_h=42, mask_ptr=0x2000)
+        self.assertEqual(e[6] | (e[7] << 8), 10, "narrow mask must not inherit box wrap")
+        self.assertEqual(e[8] | (e[9] << 8), 75)
+        # wide box AND wide mask (279): one band wrap only -> uy%256 + 256
+        e = build_entry(w, 1, True, mask_w=279, mask_h=42, mask_ptr=0x2000)
+        self.assertEqual(e[6] | (e[7] << 8), 10 + 256, "wide mask wraps exactly one band")
+        self.assertEqual(e[8] | (e[9] << 8), 279 - 256)

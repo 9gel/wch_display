@@ -28,15 +28,19 @@ panel consumes.  Two authoring modes:
       DateTime widget is present. Background is honoured from <widgetParent>, or
       retained from the base when the base is reused for DateTime.
 
-      *** DO NOT FLASH render_text=True OUTPUT ***  Confirmed on hardware
-      2026-07-22: a from-scratch blob MDT-BRICKS the panel into boot mode even
-      though it passes every structural check and byte-matches the editor on
-      geometry/field-bindings/Number advances. The app rejects something in the
-      from-scratch RESOURCE AREA (glyph-mask bytes and/or layout/ordering). Use
-      render_text=True for ANALYSIS only; the ONLY safe flash path is
-      render_text=False (reuse), which reproduces a captured editor blob
-      byte-for-byte. Recovery from a brick: replay vendor firmware frames via
-      csm_panel.firmware.flash_raw_frames (see PROTOCOL_NOTES "recovery").
+      render_text=True is HW-VALIDATED 2026-07-22: a from-scratch StaticText +
+      Number + ProgressBar + image-background theme flashes and renders correctly
+      (background, glyph text, digit numbers, bars). Getting there required three
+      fixes found by flashing + diffing against the editor: descriptor [0x4b] must
+      be 0x00 (not 0x01) and [0x53] defaults to 1 (a bogus descriptor MDT-BRICKS
+      the panel into boot mode); the background JPEG must be embedded byte-for-byte
+      (not re-encoded); and a StaticText's stored y/width derive from the MASK
+      width only (the old code double-applied the wide-band wrap via the box
+      width, rendering wide-box labels as misaligned noise). CAVEATS: DateTime is
+      still reuse-only (freeform formats black-screen the panel); glyph AA is ~1px
+      off the vendor rasteriser (cosmetic). Still VALIDATE a new from-scratch theme
+      and keep firmware-recovery frames handy (a bad blob boot-bricks; recover via
+      csm_panel.firmware.flash_raw_frames — see PROTOCOL_NOTES "recovery").
 
 STATUS OF EACH PIECE (see SPEC.md for the full derivation):
   * descriptor / header .................. CONFIRMED (A,C exact; B consistent)
@@ -511,11 +515,14 @@ def build_entry(w, wid, portrait, template=None, metric_tail=None,
             # portrait wide-transform applies to the mask width too: a mask wider
             # than one band stores w-256*k and its band-relative y gets +256*k
             # (verified on GeometryEdges' 853-px WIDE_STATIC_TEXT: k = w//256).
-            sw, sy, h = mask_w, by, mask_h
-            if portrait and mask_w >= 256:
-                k = mask_w // 256
-                sw = mask_w - 256 * k
-                sy = by + 256 * k
+            # y + width come from the MASK width, NOT the .ui box width. Compute
+            # from the raw uy so we don't double-apply the wide wrap that the
+            # box-width `by` (line ~484) already carries (that double-count pushed
+            # every wide-box StaticText a band down -> the panel read the mask
+            # misaligned as noise). k is the mask's band span.
+            k = (mask_w // 256) if portrait else 0
+            sy = (w["y"] % 256) + 256 * k
+            sw = mask_w - 256 * k
             struct.pack_into("<H", e, 6, sy & 0xFFFF)
             struct.pack_into("<H", e, 8, sw & 0xFFFF)
             e[10] = mask_h & 0xFF
@@ -717,11 +724,18 @@ def _compile_from_scratch(uiw, parent, images_dir, base, extra_metric_bases,
             import io
             bgpath = os.path.join(images_dir, os.path.basename(parent["backgroundImagePath"]))
             if os.path.exists(bgpath):
-                im = Image.open(bgpath).convert("RGB")
-                if im.size != (W, H):
-                    im = im.resize((W, H))
-                buf = io.BytesIO(); im.save(buf, format="JPEG")
-                jpg = buf.getvalue()
+                raw = open(bgpath, "rb").read()
+                with Image.open(bgpath) as probe:
+                    fmt, size = probe.format, probe.size
+                if fmt == "JPEG" and size == (W, H) and raw[:2] == b"\xff\xd8":
+                    jpg = raw                  # embed the source JPEG byte-for-byte (like the editor)
+                else:                          # re-encode only if wrong format/size (panel-safe)
+                    im = Image.open(bgpath).convert("RGB")
+                    if im.size != (W, H):
+                        im = im.resize((W, H))
+                    buf = io.BytesIO()
+                    im.save(buf, format="JPEG", subsampling=2, quality=90, progressive=False)
+                    jpg = buf.getvalue()
                 own_bg_record = struct.pack(">I", len(jpg)) + jpg
                 own_bg_flag = 0x10
                 own_framecount = 1
