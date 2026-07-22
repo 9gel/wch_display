@@ -63,6 +63,18 @@ non-standard `1×2` sampling geometry for 4:4:4. Encode with **libjpeg** (Pillow
 -sampling-factor 4:2:0`). Use ffmpeg only to *extract* frames to PNG, then encode
 with libjpeg — this is what `tools/video_to_frames.py` does.
 
+**Background images need enough detail (editor-side gotcha).** The Windows editor
+**silently drops a background** whose JPEG is too small/low-detail — it writes a
+**0-byte bg record** (panel then shows uninitialized-framebuffer noise). It is not
+the JPEG flavor (a solid/gradient PIL JPEG is byte-structurally identical to an
+accepted one) — it's the *content*: smooth images compress below a size floor
+(~between 11 KB and ~48 KB at 480×800) and get treated as empty. Real photos
+(starry 48 KB, neon_bg 58 KB) and random noise (306 KB) embed fine; a flat gradient
+(11 KB) does not. Fix for a synthetic background: add light per-pixel noise
+(±8/channel dithering ≈ film grain → ~90 KB). The editor stores the accepted bg
+**byte-for-byte** (record size == source file size; no re-encode). NOTE this only
+affects the **background**; Image *widgets* accept smooth/synthetic sources fine.
+
 **Theme size cap: 4 MiB.** The panel rejects theme blobs larger than ~4 MiB (it
 flashes/acks but shows noise). Backgrounds dominate the size — for an animated
 background (N JPEG records) drop JPEG quality until the total blob fits (a
