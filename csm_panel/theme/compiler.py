@@ -28,6 +28,16 @@ panel consumes.  Two authoring modes:
       DateTime widget is present. Background is honoured from <widgetParent>, or
       retained from the base when the base is reused for DateTime.
 
+      *** DO NOT FLASH render_text=True OUTPUT ***  Confirmed on hardware
+      2026-07-22: a from-scratch blob MDT-BRICKS the panel into boot mode even
+      though it passes every structural check and byte-matches the editor on
+      geometry/field-bindings/Number advances. The app rejects something in the
+      from-scratch RESOURCE AREA (glyph-mask bytes and/or layout/ordering). Use
+      render_text=True for ANALYSIS only; the ONLY safe flash path is
+      render_text=False (reuse), which reproduces a captured editor blob
+      byte-for-byte. Recovery from a brick: replay vendor firmware frames via
+      csm_panel.firmware.flash_raw_frames (see PROTOCOL_NOTES "recovery").
+
 STATUS OF EACH PIECE (see SPEC.md for the full derivation):
   * descriptor / header .................. CONFIRMED (A,C exact; B consistent)
   * widget-table framing (64B entries) ... CONFIRMED (A,C exact)
@@ -816,17 +826,21 @@ def _compile_from_scratch(uiw, parent, images_dir, base, extra_metric_bases,
     out[0:4] = b"\x96\x02\x00\x00"
     out[1] = 0x02                           # orientation: upright
     out[0x40] = 0x81
-    out[0x4b] = 0x01 if portrait else 0x00
+    out[0x4b] = 0x00                        # editor uses 0x00 for portrait (NOT 0x01)
     struct.pack_into(">H", out, 0x47, W)
     struct.pack_into(">H", out, 0x49, H)
     if reuse_base_res:
         # keep the base's descriptor bg color / flag / framecount (its bg record
         # is retained); copy [0x4c..0x58) so the pointers stay consistent.
+        out[0x4b] = base[0x4b]
+        out[0x53] = base[0x53]
         out[0x4c:0x58] = base[0x4c:0x58]
     else:
         struct.pack_into(">H", out, 0x4c, bg_color565 or 0xF79E)
         out[0x50] = own_bg_flag
         struct.pack_into(">I", out, 0x54, own_framecount)
+        # [0x53]: max frame count across bg + images (editor defaults to 1).
+        out[0x53] = max([1, own_framecount] + [v[1] for v in img_index.values()]) & 0xFF
     out[WIDGET_TABLE_START:WIDGET_TABLE_START + len(table)] = table
 
     out += start_res
