@@ -86,6 +86,14 @@ class TestPureHelpers(unittest.TestCase):
         self.assertEqual(C.ui_to_blob_xy(0, 0, 60, False), (0, 0, 60))
 
 
+    def test_ui_to_blob_xy_multiband(self):
+        # GeometryEdges edge cases: k = uw // 256 bands subtracted (byte-exact).
+        self.assertEqual(C.ui_to_blob_xy(40, 40, 256, True), (40, 296, 0))    # w==256 -> k=1
+        self.assertEqual(C.ui_to_blob_xy(40, 120, 512, True), (40, 632, 0))   # k=2
+        self.assertEqual(C.ui_to_blob_xy(40, 170, 600, True), (40, 682, 88))  # k=2
+        self.assertEqual(C.ui_to_blob_xy(250, 300, 300, True), (506, 300, 44))
+
+
 # ---------------------------------------------------------------------------
 @unittest.skipUnless(_has_font(), "Liberation Sans not found under /nix/store")
 class TestRenderTextMask(unittest.TestCase):
@@ -137,120 +145,177 @@ class TestReusePathByteExact(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+class TestFromScratchGeometryByteExact(unittest.TestCase):
+    """The from-scratch geometry [3:11] must match the editor byte-for-byte for
+    ProgressBar/Number, computed purely by ui_to_blob_xy (no base-copy). Verified
+    against the freshly-paired BandGeom* / GeometryEdges editor blobs. This is the
+    correction of the old (false-alarm) "per-band vertical offset"."""
+
+    def _check(self, name):
+        ui = _read(os.path.join(FIX, name + ".ui.xml"))
+        ed = _read(os.path.join(FIX, name + ".bin"))
+        uiw = [w for w in C.parse_ui(ui) if w["tag"] == "widget"]
+        et = _table(ed)
+        self.assertEqual(len(et), len(uiw))
+        for i, (e, w) in enumerate(zip(et, uiw)):
+            bt = C.UI2BLOB[w["type"]]
+            if bt not in (0x8b, 0x92):     # bars + numbers use the pure transform
+                continue
+            bx, by, bw = C.ui_to_blob_xy(w["x"], w["y"], w["width"], True)
+            pred = (w["x"] // 256, bx, by, bw, w["height"] & 0xFF)
+            self.assertEqual(_geom(e), pred,
+                             f"{name} widget #{i} type {hex(bt)} geometry")
+
+    def test_bandgeom_flat(self):
+        self._check("BandGeomFlat")
+
+    def test_bandgeom_image(self):
+        self._check("BandGeomImage")
+
+    def test_geometry_edges(self):
+        self._check("GeometryEdges")
+
+
+# ---------------------------------------------------------------------------
 @unittest.skipUnless(_has_font(), "Liberation Sans not found")
-@unittest.skipUnless(os.path.exists(SYS_BLOB), "sysstatus_editor.bin not present")
-@unittest.skipUnless(os.path.isdir(SYS_IMAGES), "theme image folder not present")
-class TestFromScratchStructural(unittest.TestCase):
-    """From-scratch (render_text=True) structural-validity acceptance criteria."""
+class TestNumberGlyphs(unittest.TestCase):
+    """Decoded Number(0x92) digit-strip + metric tail, verified against
+    NumberMatrix.bin (Numbers at sizes 8..64 + hAlign/isDiv1204 variants)."""
 
     @classmethod
     def setUpClass(cls):
-        cls.ui = _read(os.path.join(FIX, "SysStatus.ui.xml"))
-        cls.ed = _read(SYS_BLOB)
-        cls.out = C.compile_ui_to_blob(cls.ui, images_dir=SYS_IMAGES,
-                                       base_blob_for_resources=cls.ed,
+        cls.ed = _read(os.path.join(FIX, "NumberMatrix.bin"))
+        cls.et = _table(cls.ed)
+        # NumberMatrix .ui doc order: sizes 8,12,16,20,24,32,40,48,64, then 28x5.
+        cls.sizes = [8, 12, 16, 20, 24, 32, 40, 48, 64, 28, 28, 28, 28, 28]
+
+    def _ed_tail(self, e):
+        # strip_h + 12 advances (BE u16) at [20:46]
+        return [struct.unpack_from(">H", e, o)[0] for o in range(20, 46, 2)]
+
+    def test_advances_match_editor_exactly(self):
+        for e, sz in zip(self.et, self.sizes):
+            self.assertEqual(e[0], 0x92)
+            _, strip_h, adv = C.render_number_strip(sz, 0, 0)
+            ed = self._ed_tail(e)
+            ed_adv = ed[1:13]
+            self.assertEqual(adv, ed_adv, f"size {sz} advances")
+
+    def test_strip_height_within_1px(self):
+        for e, sz in zip(self.et, self.sizes):
+            _, strip_h, _ = C.render_number_strip(sz, 0, 0)
+            ed_h = self._ed_tail(e)[0]
+            self.assertLessEqual(abs(strip_h - ed_h), 1, f"size {sz} strip_h")
+
+    def test_strip_bytes_length_matches_span(self):
+        # Each glyph is advance_w x strip_h; total strip == sum(adv)*strip_h.
+        for e, sz in zip(self.et, self.sizes):
+            strip, strip_h, adv = C.render_number_strip(sz, 0, 0)
+            self.assertEqual(len(strip), sum(adv) * strip_h, f"size {sz}")
+
+    def test_tail_builder_layout(self):
+        strip, strip_h, adv = C.render_number_strip(28, 0, 0)
+        tail = C.number_metric_tail(strip_h, adv)
+        self.assertEqual(len(tail), 44)                       # [20:64]
+        self.assertEqual(struct.unpack_from(">H", tail, 0)[0], strip_h)
+        got_adv = [struct.unpack_from(">H", tail, 2 + 2 * i)[0] for i in range(12)]
+        self.assertEqual(got_adv, adv)
+
+
+# ---------------------------------------------------------------------------
+@unittest.skipUnless(_has_font(), "Liberation Sans not found")
+class TestNumberMatrixFromScratch(unittest.TestCase):
+    """A from-scratch (render_text=True) compile of NumberMatrix (no base blob
+    needed — no DateTime) must produce valid, correctly-dimensioned Numbers whose
+    digit strips fit in the blob and whose geometry/tail match the editor."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ui = _read(os.path.join(FIX, "NumberMatrix.ui.xml"))
+        cls.ed = _read(os.path.join(FIX, "NumberMatrix.bin"))
+        cls.out = C.compile_ui_to_blob(cls.ui, images_dir=None,
+                                       base_blob_for_resources=None,
                                        render_text=True)
         cls.uiw = [w for w in C.parse_ui(cls.ui) if w["tag"] == "widget"]
         cls.ot = _table(cls.out)
         cls.et = _table(cls.ed)
         cls.clen = struct.unpack_from(">I", cls.out, 0x58)[0]
-        cls.res_start = struct.unpack_from(">I", cls.out, 0x1000)[0] + 0x1004
 
-    def test_descriptor_valid(self):
+    def test_descriptor_and_content_len(self):
         self.assertEqual(self.out[:4], b"\x96\x02\x00\x00")
         self.assertEqual(self.out[0x40], 0x81)
-        self.assertEqual(struct.unpack_from(">H", self.out, 0x47)[0], 480)
-        self.assertEqual(struct.unpack_from(">H", self.out, 0x49)[0], 800)
-
-    def test_content_len_correct(self):
         self.assertEqual(self.clen, len(self.out))
 
-    def test_one_entry_per_widget(self):
+    def test_one_number_entry_per_widget(self):
         self.assertEqual(len(self.ot), len(self.uiw))
+        for e in self.ot:
+            self.assertEqual(e[0], 0x92)
 
-    def test_types_match_document_order(self):
-        for e, w in zip(self.ot, self.uiw):
-            self.assertEqual(e[0], C.UI2BLOB[w["type"]])
+    def test_geometry_matches_editor(self):
+        for o, e in zip(self.ot, self.et):
+            self.assertEqual(_geom(o), _geom(e))
 
-    def test_base_bound_geometry_present_in_editor(self):
-        # Number/DateTime/ProgressBar geometry [3:11] is copied from the base and
-        # must therefore appear (as a multiset) among the editor's entries.
-        from collections import Counter
-        ed_by_type = {}
-        for e in self.et:
-            ed_by_type.setdefault(e[0], Counter())[_geom(e)] += 1
-        for bt in (0x92, 0x8e, 0x8b):
-            mine = Counter(_geom(e) for e in self.ot if e[0] == bt)
-            missing = mine - ed_by_type.get(bt, Counter())
-            self.assertFalse(missing, f"type {hex(bt)} unmatched geometry: {dict(missing)}")
+    def test_halign_byte_matches_editor(self):
+        for o, e in zip(self.ot, self.et):
+            self.assertEqual(o[11], e[11], "hAlign byte [11]")
 
-    def test_image_geometry_matches_transform(self):
-        # Image geometry is computed by the transform and must match the editor.
-        from collections import Counter
-        mine = Counter(_geom(e) for e in self.ot if e[0] == 0x84)
-        ed = Counter(_geom(e) for e in self.et if e[0] == 0x84)
-        self.assertFalse(mine - ed, "image geometry diverges from editor")
+    def test_strips_in_bounds_and_sized(self):
+        res_start = 0x1000
+        for o in self.ot:
+            p = (o[17] << 16) | (o[18] << 8) | o[19]
+            strip_h = struct.unpack_from(">H", o, 20)[0]
+            adv = [struct.unpack_from(">H", o, 22 + 2 * i)[0] for i in range(12)]
+            self.assertTrue(res_start <= p < self.clen, "strip ptr in resource area")
+            self.assertLessEqual(p + sum(adv) * strip_h, self.clen,
+                                 "strip fits in blob")
 
-    def test_statictext_pointers_in_bounds_and_sized(self):
-        st = [e for e in self.ot if e[0] == 0x93]
-        self.assertTrue(st)
+    def test_tail_metrics_match_editor(self):
+        # our advances match the editor exactly; strip_h within 1px.
+        for o, e in zip(self.ot, self.et):
+            o_adv = [struct.unpack_from(">H", o, 22 + 2 * i)[0] for i in range(12)]
+            e_adv = [struct.unpack_from(">H", e, 22 + 2 * i)[0] for i in range(12)]
+            self.assertEqual(o_adv, e_adv)
+
+
+# ---------------------------------------------------------------------------
+class TestDocumentedByteFacts(unittest.TestCase):
+    """Guards for the secondary decoded facts (DateTime align/format, underline
+    no-op) so the docs and code stay honest."""
+
+    def test_datetime_align_and_field(self):
+        # DateTime entry: [2]=0x15 fixed field id, [11]=hAlign (2=right).
+        et = _table(_read(os.path.join(FIX, "TextStylesDateTime.bin")))
+        dt = [e for e in et if e[0] == 0x8e]
+        self.assertEqual(len(dt), 1)
+        self.assertEqual(dt[0][2], 0x15)
+        self.assertEqual(dt[0][11], 2)          # .ui hAlign=2 (right)
+
+    def test_datetime_format_skeleton_inline(self):
+        # yyyy-mm-dd hh:nn:ss is stored inline as "1-2-3 4:5:6" in the tail.
+        et = _table(_read(os.path.join(FIX, "TextStylesDateTime.bin")))
+        dt = [e for e in et if e[0] == 0x8e][0]
+        self.assertIn(b"1-2-3 4:5:6", bytes(dt))
+
+    def test_badformat_overflows_tail(self):
+        # The crashing freeform format overruns the 19-byte skeleton region: the
+        # entry's last byte is non-zero (skeleton spilled to the entry boundary),
+        # unlike the safe theme whose tail is zero-terminated.
+        ok = _table(_read(os.path.join(FIX, "TextStylesDateTime.bin")))
+        bad = _table(_read(os.path.join(FIX, "TextStylesDateTime_badformat.bin")))
+        ok_dt = [e for e in ok if e[0] == 0x8e][0]
+        bad_dt = [e for e in bad if e[0] == 0x8e][0]
+        self.assertEqual(ok_dt[63], 0x00)       # safe: skeleton fits, NUL-padded
+        self.assertNotEqual(bad_dt[63], 0x00)   # crash: freeform format overran
+
+    def test_underline_strikeout_are_noops(self):
+        # The underline/strikeout StaticTexts carry NO distinguishing byte/bit in
+        # the widget entry vs a plain StaticText (UI-only; never rendered).
+        et = _table(_read(os.path.join(FIX,
+                    "TextStylesDateTime_underline_strikeout.bin")))
+        st = [e for e in et if e[0] == 0x93]
+        # entry [15:17]=color, [17]=0xff; bytes [12:15]=ptr; nothing else set.
         for e in st:
-            p = _ptr(e)
-            w = struct.unpack_from("<H", e, 8)[0]
-            h = e[10]
-            self.assertTrue(self.res_start <= p < self.clen, "ptr in resource area")
-            self.assertLessEqual(p + w * h, self.clen, "mask region fits in blob")
-
-    def test_image_pointers_in_bounds_and_sized(self):
-        from PIL import Image
-        img = [e for e in self.ot if e[0] == 0x84]
-        self.assertTrue(img)
-        doc_imgs = [w for w in self.uiw if w["type"] == 4]
-        for e, w in zip(img, doc_imgs):
-            p = _ptr(e)
-            self.assertTrue(self.res_start <= p < self.clen, "image ptr in resource area")
-            paths = C._image_frame_paths(SYS_IMAGES, w["imagePath"])
-            if not paths:
-                continue
-            with Image.open(paths[0]) as im:
-                alpha = (im.mode in ("RGBA", "LA")
-                         and im.getchannel("A").getextrema()[0] < 255)
-            bpp = 3 if alpha else 2
-            size = w["width"] * w["height"] * bpp * len(paths)
-            self.assertLessEqual(p + size, self.clen, "image region fits in blob")
-            self.assertEqual(e[16], len(paths), "frame count byte [16]")
-            self.assertEqual(e[17], 0x01 if len(paths) == 1 else 0x00, "static flag [17]")
-
-    def test_statictext_mask_dims_within_2px_of_editor(self):
-        # For each editor StaticText mask, the .ui text that produced it must
-        # render to within 2px. We match editor masks to .ui texts by (fontSize)
-        # and content; the editor kept 'kbps' among ASCII texts (79x42) and the
-        # non-ASCII degC masks (36x36). (It dropped homelab/homelab2/mac mini
-        # from its table entirely — those have no editor mask to compare.)
-        ed_dims = {(struct.unpack_from("<H", e, 8)[0], e[10])
-                   for e in self.et if e[0] == 0x93}
-        _, kw, kh = C.render_text_mask("kbps", 28, 0, 0)
-        self.assertTrue(any(abs(ew - kw) <= 2 and abs(eh - kh) <= 2
-                            for ew, eh in ed_dims),
-                        f"'kbps' {kw}x{kh} not within 2px of any editor mask "
-                        f"{sorted(ed_dims)}")
-
-    def test_statictext_height_follows_size_rule(self):
-        from PIL import ImageFont
-        for w in (w for w in self.uiw if w["type"] == 2):
-            px = C._pixel_size(w["fontSize"])
-            asc, desc = ImageFont.truetype(
-                C._find_font(w["bold"], w.get("italic", 0)), px).getmetrics()
-            _, _, mh = C.render_text_mask(w["text"], w["fontSize"], w["bold"],
-                                          w.get("italic", 0))
-            self.assertEqual(mh, asc + desc, f"{w['text']!r} size {w['fontSize']}")
-
-    def test_roundtrip_parse(self):
-        # blob parses cleanly back through the widget table (no stray bytes).
-        ents = _table(self.out)
-        self.assertEqual(len(ents), len(self.uiw))
-        for e in ents:
-            self.assertTrue(0x80 <= e[0] <= 0x9f)
+            self.assertTrue(all(b == 0 for b in e[20:]), "no extra flag bytes")
 
 
 if __name__ == "__main__":

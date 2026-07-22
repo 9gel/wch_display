@@ -247,14 +247,36 @@ frame (records run 0x02..0x15); some vendor themes bind bars to field 1, which i
 then driven by a different (slow named-sensor) path we don't use.
 
 **Coordinate transform (portrait themes):** the 480×800 canvas is resliced into
-256-px-tall bands packed left-to-right in the panel's landscape framebuffer:
-`bl_x = ui_x%256 + 256*(ui_y//256)`, `bl_y = ui_y%256` (landscape themes are
-identity). This is why the editor's preview isn't pixel-WYSIWYG.
+256-px-tall bands packed left-to-right in the panel's landscape framebuffer.
+A widget whose width spans `k = ui_w // 256` band boundaries wraps down `k` bands:
+`bl_x = ui_x%256 + 256*(ui_y//256)`, `bl_y = ui_y%256 + 256*k`, `bl_w = ui_w −
+256*k` (landscape themes are identity). Confirmed byte-exact for every widget type
+and width (incl. `ui_w` = 256/512/853) against fresh editor blobs; there is **no**
+per-band vertical offset (an earlier "offset" was a stale-fixture artefact). This
+is why the editor's preview isn't pixel-WYSIWYG.
+
+**Number glyphs (0x92) — decoded, synthesisable.** A Number's digits are a
+**glyph-major 8-bpp "digit strip"** in the resource area: the 12 glyphs
+`0..9 . -` stored consecutively, each an `advance × strip_height` row-major block.
+The entry carries `[11]`=hAlign, `[12:14]`=color RGB565 BE, `[17:20]`=BE24 strip
+pointer, `[20:22]`=strip_height and `[22:46]`=12 glyph advances (BE u16). Advances
+equal FreeType `getlength()` at pixel size `round(fontSize*4/3)`; strip_height =
+`ascent+descent`. The compiler renders these from scratch (Liberation Sans).
+
+**DateTime (0x8e) — partial.** Same tail shape as Number (glyph strip + advances),
+plus the **date/time format packed inline in `[45:64]`** (`yyyy-mm-dd hh:nn:ss` →
+`"1-2-3 4:5:6"`). Right-align (`[11]`=2) works on-panel (StaticText right-align
+does not). **A freeform `dateTimeFormat` overruns `[45:64]` and BLACK-SCREENS the
+panel** — only the built-in skeleton is safe. The compiler never synthesises
+DateTime; it reuses a base entry, so a base blob is required only when a `.ui`
+contains a DateTime widget.
 
 The compiler (`csm_panel/theme/compiler.py`) rebuilds the descriptor + widget
-table from a `.ui` and **reuses a known-good base blob's records + resource area**
-(background JPEG + glyph masks), since pixel-exact glyph synthesis isn't
-implemented. It reproduces a real vendor blob **byte-for-byte**.
+table from a `.ui`. Its `render_text=False` reuse path copies a known-good base
+blob's records + resource area verbatim and reproduces a real vendor blob
+**byte-for-byte**. Its `render_text=True` from-scratch path now synthesises
+StaticText masks, **Number digit strips**, and Image pixels with no base blob
+(DateTime still needs one, per above).
 
 ## History / dead-ends (condensed)
 Earlier we mis-identified this as a UsbPCMonitor/Turing/XuanFang "smart screen"

@@ -13,28 +13,39 @@ panel consumes.  Two authoring modes:
 
   render_text=True   (from-scratch authoring)
       Renders each StaticText (type 2) as an 8-bpp coverage mask (Liberation Sans,
-      pixel size round(fontSize*4/3), height = ascent+descent) and each Image
-      (type 4) as raw resource pixels — opaque source -> RGB565 (w*h*2/frame),
-      transparent PNG -> RGB565+8-bit alpha (w*h*3/frame), N frames consecutive
-      for a folder animation. These new resources are APPENDED after the base
-      blob's resource area, and each widget's [12:15] pointer targets them.
-      Number/DateTime digit glyphs (format undecoded) plus their geometry [3:11]
-      and metric tail [12:64] are REUSED verbatim from the base blob's aligned
-      entries; the base resource area is kept intact at its original offsets so
-      those pointers stay valid. Background is honoured from <widgetParent>, or
-      retained from the base when the base supplies the Number resource area.
+      pixel size round(fontSize*4/3), height = ascent+descent); each Number
+      (type 5) as a glyph-major 8-bpp digit strip ('0..9.-', per-glyph advance x
+      strip_h) + metric tail; and each Image (type 4) as raw resource pixels —
+      opaque source -> RGB565 (w*h*2/frame), transparent PNG -> RGB565+8-bit alpha
+      (w*h*3/frame), N frames consecutive for a folder animation. These new
+      resources are APPENDED after any reused base resource area, and each widget's
+      resource pointer targets them. Geometry [3:11] is computed purely by
+      ui_to_blob_xy for EVERY widget type (verified byte-exact vs the editor on
+      BandGeom* / GeometryEdges; the old "per-band offset" copy was a false alarm).
+      DateTime (type 6) is only partially decoded (format skeleton packed inline in
+      the tail, freeform formats crash the panel) so it still REUSES the base
+      blob's aligned entry + resource area; a base blob is required only when a
+      DateTime widget is present. Background is honoured from <widgetParent>, or
+      retained from the base when the base is reused for DateTime.
 
 STATUS OF EACH PIECE (see SPEC.md for the full derivation):
   * descriptor / header .................. CONFIRMED (A,C exact; B consistent)
   * widget-table framing (64B entries) ... CONFIRMED (A,C exact)
   * .ui-type -> blob-type map ............ CONFIRMED (A,C exact)
-  * coordinate reslice transform ......... CONFIRMED byte-perfect incl. wide
-                                           (>256px) band-wrap; uw>512 / uw==256
-                                           still UNVERIFIED (see docs/THEME_UNKNOWNS.md)
+  * coordinate reslice transform ......... CONFIRMED byte-perfect incl. multi-band
+                                           wrap (k = uw//256 bands): uw==256 (k=1),
+                                           uw=512 (k=2), uw=853 (k=3) all verified
+                                           on GeometryEdges
   * ProgressBar(0x8b) color layout ....... CONFIRMED
   * StaticText(0x93) color+ptr layout .... CONFIRMED (ptr into 8bpp mask area)
-  * Number(0x92) color + hAlign flag ..... CONFIRMED; digit-metric table INFERRED
-  * DateTime(0x8e) color + format string . CONFIRMED
+  * Number(0x92) glyph strip + tail ...... CONFIRMED byte-exact (NumberMatrix):
+                                           [11]=hAlign, [12:14]color, [17:20]BE24
+                                           ptr to glyph-major digit strip, [20:46]
+                                           strip_h+12 advances BE u16; from-scratch
+                                           emission implemented (render_number_strip)
+  * DateTime(0x8e) color + format ........ PARTIAL: format skeleton packed inline
+                                           in tail [45:64] ("1-2-3 4:5:6"); freeform
+                                           overflows -> panel crash; reuse-only
   * Image(0x84) ptr[12:15]+framecount[15] . CONFIRMED (raw RGB565 w*h*2/frame;
                                            alpha PNG = w*h*3 = RGB565+8bit alpha;
                                            frames consecutive in resource area)
@@ -49,7 +60,8 @@ STATUS OF EACH PIECE (see SPEC.md for the full derivation):
                                            download) before flashing; keep the
                                            firmware recovery frames handy.
   * background color [0x4c] .............. CONFIRMED (homelab bg fff1f1f1->0xf79e)
-  * Number/DateTime metric tail by size .. INFERRED (copied from base library)
+  * Number digit strip + tail by size .... CONFIRMED byte-exact (from-scratch)
+  * DateTime metric tail / glyph strip ... PARTIAL (reuse base; see above)
 """
 import glob
 import os
@@ -87,20 +99,22 @@ def argb_to_rgb(argb_hex):
 def ui_to_blob_xy(ux, uy, uw, portrait):
     """Portrait 480x800 -> landscape framebuffer via 256-tall band reslice.
 
-    Returns (bl_x, bl_y, bl_w). Verified byte-exact against the Neon Grid blob
-    (20 widgets, narrow Numbers + wide 300px bars):
-      bl_x = (ux mod 256) + 256*(uy//256)                  # both cases
-      narrow (uw <= 256):  bl_y = uy mod 256 ;        bl_w = uw
-      wide   (uw >  256):  bl_y = (uy mod 256) + 256 ; bl_w = uw - 256
-    A >256-wide widget wraps into the next band down (by += 256) and its stored
-    width drops by one band. Landscape themes are identity.
-    NOTE: the wide rule is only confirmed for 256 < uw < 512 (single band-cross);
-    uw > 512 (multi-band) and uw == 256 are UNVERIFIED (see PROTOCOL_NOTES)."""
+    Returns (bl_x, bl_y, bl_w). Verified byte-exact against the Neon Grid,
+    BandGeomFlat/Image and GeometryEdges editor blobs:
+      bl_x = (ux mod 256) + 256*(uy//256)                  # always
+      k    = uw // 256                                      # bands the width spans
+      bl_y = (uy mod 256) + 256*k
+      bl_w = uw - 256*k
+    A widget wider than one band wraps down k bands (by += 256*k) and its stored
+    width drops by k bands. GeometryEdges confirmed every branch byte-exact:
+    uw==256 -> k=1 (wide branch, bl_w=0); uw=512 -> k=2; uw=853 -> k=3; uw<256
+    -> k=0 (identity). Landscape themes are identity."""
     if not portrait:
         return ux, uy, uw
     bl_x = (ux % 256) + 256 * (uy // 256)
-    if uw > 256:
-        return bl_x, (uy % 256) + 256, uw - 256
+    k = uw // 256
+    if k:
+        return bl_x, (uy % 256) + 256 * k, uw - 256 * k
     return bl_x, uy % 256, uw
 
 
@@ -170,6 +184,61 @@ def render_text_mask(text, font_size, bold, italic=0):
     d = ImageDraw.Draw(tmp)
     d.text((0, 0), text, fill=255, font=font)
     return tmp.tobytes(), w, h
+
+
+# ---------------------------------------------------------------------------
+# Number(0x92) digit-glyph resource + metric tail
+# ---------------------------------------------------------------------------
+# The Number glyph resource ("digit strip") is a GLYPH-MAJOR 8-bpp coverage
+# atlas, decoded byte-exact from NumberMatrix.bin: 12 glyphs in fixed order
+#   '0','1',...,'9','.','-'
+# stored consecutively, each glyph a (advance_width x strip_height) row-major
+# 8-bpp block. The widget entry's [17:20] BE24 pointer targets this strip; its
+# per-glyph advance widths + strip height live in the tail [20:...] as BE u16:
+#   [20:22]  strip_height
+#   [22:42]  advance width of each digit 0..9   (all equal, = FreeType adv('0'))
+#   [42:44]  advance width of '.'  (FreeType adv('.'))
+#   [44:46]  advance width of '-'  (FreeType adv('-'))
+# Advances match FreeType getlength() EXACTLY at pixel size round(fontSize*4/3);
+# strip_height == FreeType ascent+descent at that size (editor within +-1px).
+# Entry [11] = hAlign (0 left / 1 center / 2 right); [12:14] fontColor RGB565 BE;
+# [14]=0x00 [15]=0xff [16]=0x00. Entry [10] = the .ui box height (NOT strip_h).
+NUMBER_GLYPHS = "0123456789.-"
+
+
+def render_number_strip(font_size, bold=0, italic=0):
+    """Render the Number digit strip for `font_size`.
+
+    Returns (strip_bytes, strip_h, advances) where advances is the 12-entry list
+    of per-glyph widths [d0..d9, dp, minus]. Each glyph is stored as an
+    advance_width x strip_h 8-bpp coverage block, laid out glyph-major in the
+    order NUMBER_GLYPHS. Matches the editor's digit strip within ~1px.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+    px = _pixel_size(font_size)
+    fp = _find_font(bool(bold), bool(italic))
+    font = ImageFont.truetype(fp, px)
+    asc, desc = font.getmetrics()
+    strip_h = asc + desc
+    advances = [max(1, int(round(font.getlength(ch)))) for ch in NUMBER_GLYPHS]
+    out = bytearray()
+    for ch, adv in zip(NUMBER_GLYPHS, advances):
+        cell = Image.new("L", (adv, strip_h), 0)
+        ImageDraw.Draw(cell).text((0, 0), ch, fill=255, font=font)
+        out += cell.tobytes()
+    return bytes(out), strip_h, advances
+
+
+def number_metric_tail(strip_h, advances):
+    """Build the 52-byte Number metric tail [12:64] (minus color/ptr, which the
+    entry builder fills). Returns bytes for [20:64]: strip_h + 12 advances as
+    BE u16, zero-padded. (Color [12:17] + BE24 ptr [17:20] are added by the
+    caller.)"""
+    tail = bytearray(44)                       # [20:64] = 44 bytes
+    struct.pack_into(">H", tail, 0, strip_h & 0xFFFF)
+    for i, adv in enumerate(advances):         # d0..d9, dp, minus
+        struct.pack_into(">H", tail, 2 + 2 * i, adv & 0xFFFF)
+    return bytes(tail)
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +437,8 @@ def _nearest_size(lib, bt, size, warnings):
 # ---------------------------------------------------------------------------
 def build_entry(w, wid, portrait, template=None, metric_tail=None,
                 mask_w=None, mask_h=None, mask_ptr=None, field_override=None,
-                img_ptr=None, img_frames=None, img_static=None):
+                img_ptr=None, img_frames=None, img_static=None,
+                num_ptr=None, num_tail=None):
     """Build one 64-byte widget entry.
 
     template   : legacy reuse path — full 64-byte base entry of same type; lends
@@ -379,6 +449,8 @@ def build_entry(w, wid, portrait, template=None, metric_tail=None,
     mask_w/h/ptr: from-scratch path — StaticText rendered-mask size + resource ptr.
     img_ptr/frames/static: from-scratch path — Image resource pointer, frame count
                  and static/anim flag.
+    num_ptr/num_tail: from-scratch path — Number digit-strip resource pointer +
+                 the [20:64] metric tail from number_metric_tail().
     """
     template_tail = template[12:64] if template else None
     bt = UI2BLOB[w["type"]]
@@ -427,11 +499,13 @@ def build_entry(w, wid, portrait, template=None, metric_tail=None,
         elif mask_ptr is not None:         # from-scratch: our rendered mask
             # The stored w/h are the MASK dimensions (not the .ui box), and the
             # portrait wide-transform applies to the mask width too: a mask wider
-            # than 256 stores w-256 and its band-relative y gets +256.
+            # than one band stores w-256*k and its band-relative y gets +256*k
+            # (verified on GeometryEdges' 853-px WIDE_STATIC_TEXT: k = w//256).
             sw, sy, h = mask_w, by, mask_h
-            if portrait and mask_w > 256:
-                sw = mask_w - 256
-                sy = by + 256
+            if portrait and mask_w >= 256:
+                k = mask_w // 256
+                sw = mask_w - 256 * k
+                sy = by + 256 * k
             struct.pack_into("<H", e, 6, sy & 0xFFFF)
             struct.pack_into("<H", e, 8, sw & 0xFFFF)
             e[10] = mask_h & 0xFF
@@ -445,16 +519,25 @@ def build_entry(w, wid, portrait, template=None, metric_tail=None,
             e[17] = 0xFF
     elif bt == 0x92:  # Number
         e[11] = w.get("hAlign", 0) & 0xFF
-        tail = template[12:64] if template else metric_tail
-        if tail:
-            e[8:12] = (template[8:12] if template else e[8:12])
-            e[12:64] = tail
-            # overwrite fontColor with this widget's color; keep metrics/marker
+        if num_ptr is not None:            # from-scratch: rendered digit strip
+            # geometry [3:11] already set from ui_to_blob_xy above.
             struct.pack_into(">H", e, 12, rgb565(w.get("fontColor")))
-            e[14] = 0x00; e[15] = 0xFF
+            e[14] = 0x00; e[15] = 0xFF; e[16] = 0x00
+            e[17] = (num_ptr >> 16) & 0xFF
+            e[18] = (num_ptr >> 8) & 0xFF
+            e[19] = num_ptr & 0xFF
+            e[20:64] = num_tail            # strip_h + 12 advances (BE u16)
         else:
-            struct.pack_into(">H", e, 12, rgb565(w.get("fontColor")))
-            e[14] = 0x00; e[15] = 0xFF
+            tail = template[12:64] if template else metric_tail
+            if tail:
+                e[8:12] = (template[8:12] if template else e[8:12])
+                e[12:64] = tail
+                # overwrite fontColor with this widget's color; keep metrics/marker
+                struct.pack_into(">H", e, 12, rgb565(w.get("fontColor")))
+                e[14] = 0x00; e[15] = 0xFF
+            else:
+                struct.pack_into(">H", e, 12, rgb565(w.get("fontColor")))
+                e[14] = 0x00; e[15] = 0xFF
     elif bt == 0x8e:  # DateTime
         e[11] = 1
         tail = template[12:64] if template else metric_tail
@@ -573,22 +656,26 @@ def _compile_from_scratch(uiw, parent, images_dir, base, extra_metric_bases,
                           W, H, portrait):
     """From-scratch authoring.
 
-    StaticText -> rendered 8-bpp coverage masks; Image -> raw RGB565 (opaque) or
-    RGB565+alpha (transparent) pixels; both laid out in a fresh resource area.
-    Number/DateTime glyphs are NOT synthesised (format undecoded): we REUSE the
-    base blob wholesale (records + resource area) as the starting resource region
-    and copy each Number/DateTime's aligned base entry (geometry [3:11] + metric
-    tail [12:64]) so those widgets keep working at their base offsets. New
-    StaticText/Image resources are APPENDED after the base resource area, so base
-    Number pointers stay valid. Requires `base` when Number/DateTime are present.
+    StaticText -> rendered 8-bpp coverage masks; Number -> rendered digit-strip
+    (glyph-major 8-bpp atlas '0..9.-') + metric tail; Image -> raw RGB565 (opaque)
+    or RGB565+alpha (transparent) pixels; all laid out in a fresh resource area.
+    Geometry [3:11] is computed with the pure ui_to_blob_xy transform for EVERY
+    widget type (verified byte-exact vs the editor on BandGeom* / GeometryEdges;
+    the old "per-band offset" workaround was a false alarm from a stale fixture).
+
+    DateTime (0x8e) glyphs+format skeleton are only PARTIALLY decoded (the format
+    template is packed inline in the tail [45:64] and freeform formats overflow /
+    crash the panel), so DateTime still REUSES the base blob's aligned entry +
+    resource area verbatim; a base blob is required only when DateTime is present.
+    New StaticText/Number/Image resources are APPENDED after the (possibly reused)
+    base resource area so base DateTime pointers stay valid.
     """
     warnings = []
     types = {UI2BLOB.get(w["type"]) for w in uiw}
-    has_num_dt = 0x92 in types or 0x8e in types
+    has_datetime = 0x8e in types
 
     # Pool of base entries by type, popped in document order to align each
-    # Number/DateTime widget with its editor entry (same order the reuse path
-    # uses; verified byte-exact on SysStatus/NeonGrid).
+    # DateTime widget with its editor entry (same order the reuse path uses).
     base_pool = defaultdict(deque)
     base_res = b""            # base records + resource area (0x1000..content_len)
     if base is not None:
@@ -597,18 +684,19 @@ def _compile_from_scratch(uiw, parent, images_dir, base, extra_metric_bases,
             base_pool[be[0]].append(bytes(be))
         base_content_len = struct.unpack_from(">I", base, 0x58)[0]
         base_res = base[RECORD_OFFSET:base_content_len]
-    if has_num_dt and base is None:
-        warnings.append("Number/DateTime widgets present but no base blob given; "
-                        "their digit glyphs (undecoded format) cannot be emitted.")
+    if has_datetime and base is None:
+        warnings.append("DateTime widget present but no base blob given; its "
+                        "glyph strip + format skeleton (partially decoded) cannot "
+                        "be emitted from scratch.")
 
     # --- background ---
-    # When we reuse the base resource area (Number/DateTime present) the base
-    # already carries the background JPEG record at 0x1000; keep it (and only swap
-    # it for a solid color if the .ui has no background image). Otherwise build a
+    # When we reuse the base resource area (DateTime present) the base already
+    # carries the background JPEG record at 0x1000; keep it (and only swap it for a
+    # solid color if the .ui has no background image). Otherwise build a
     # single-frame background record from the .ui.
     bg_type = parent.get("backgroundType", 0) if parent else 0
     bg_color565 = rgb565(parent.get("backgroundColor", "ff000000")) if parent else 0
-    reuse_base_res = has_num_dt and base is not None
+    reuse_base_res = has_datetime and base is not None
 
     own_bg_record = b""
     own_bg_flag = 0x00
@@ -671,6 +759,22 @@ def _compile_from_scratch(uiw, parent, images_dir, base, extra_metric_bases,
                 cursor += len(data)
         im_info[id(w)] = img_index[key]
 
+    # --- render Number digit strips (dedup by (fontSize, bold, italic)) ---
+    num_index = {}           # (fontSize,bold,italic) -> (ptr, tail_bytes)
+    num_info = {}            # id(widget) -> (ptr, tail_bytes)
+    for w in uiw:
+        if UI2BLOB.get(w["type"]) != 0x92:
+            continue
+        key = (w["fontSize"], bool(w["bold"]), bool(w.get("italic", 0)))
+        if key not in num_index:
+            strip, strip_h, advances = render_number_strip(
+                w["fontSize"], w["bold"], w.get("italic", 0))
+            tail = number_metric_tail(strip_h, advances)
+            num_index[key] = (cursor, tail)
+            appended += strip
+            cursor += len(strip)
+        num_info[id(w)] = num_index[key]
+
     # --- widget table ---
     table = bytearray()
     for i, w in enumerate(uiw, start=1):
@@ -684,33 +788,26 @@ def _compile_from_scratch(uiw, parent, images_dir, base, extra_metric_bases,
             ptr, fc, static = im_info[id(w)]
             table += build_entry(w, i, portrait, img_ptr=ptr, img_frames=fc,
                                  img_static=static)
-        elif bt in (0x92, 0x8e):
-            # Reuse the aligned base entry verbatim: its geometry [3:11] and glyph
-            # metric tail [12:64] point at the (unchanged) base resource offsets.
+        elif bt == 0x92:  # Number — synthesised digit strip + metric tail
+            ptr, tail = num_info[id(w)]
+            table += build_entry(w, i, portrait, num_ptr=ptr, num_tail=tail)
+        elif bt == 0x8e:  # DateTime — reuse the aligned base entry verbatim
+            # Its geometry [3:11], format skeleton [45:64] and glyph metric tail
+            # point at the (unchanged) base resource offsets; from-scratch DateTime
+            # is not yet safe to emit (see docs/THEME_UNKNOWNS.md).
             tmpl = base_pool[bt].popleft() if base_pool[bt] else None
             if tmpl is None:
-                warnings.append(f"no base entry to align {'Number' if bt==0x92 else 'DateTime'}"
-                                f" widget #{i}; emitting geometry-only entry")
+                warnings.append(f"no base entry to align DateTime widget #{i}; "
+                                f"emitting geometry-only entry")
                 table += build_entry(w, i, portrait)
             else:
-                fo = tmpl[2]
-                # keep base geometry+tail but rebind field id and recolor from .ui
-                e = build_entry(w, i, portrait, template=tmpl, field_override=fo)
-                e = bytearray(e)
+                e = bytearray(build_entry(w, i, portrait, template=tmpl,
+                                          field_override=tmpl[2]))
                 e[1] = i & 0xFF
-                e[2] = (0x15 if bt == 0x8e else w.get("fastSensor", 0)) & 0xFF
+                e[2] = 0x15
                 table += bytes(e)
-        elif bt == 0x8b:  # ProgressBar
-            # Colors come from the .ui; but the editor's band-relative Y packing
-            # for tall/multi-band layouts is not a confirmed pure transform (a
-            # per-band offset appears in some themes — see docs/THEME_UNKNOWNS.md),
-            # so when a matching base entry is available we copy its geometry
-            # [3:11] to stay byte-consistent with the editor's layout.
-            tmpl = base_pool[bt].popleft() if base_pool[bt] else None
-            e = bytearray(build_entry(w, i, portrait))
-            if tmpl is not None:
-                e[3:11] = tmpl[3:11]
-            table += bytes(e)
+        elif bt == 0x8b:  # ProgressBar — pure transform geometry (verified exact)
+            table += build_entry(w, i, portrait)
         else:
             table += build_entry(w, i, portrait)
 

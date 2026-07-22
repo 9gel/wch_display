@@ -46,11 +46,37 @@ author freely we need the exact format.
 - **Pixel size = round(fontSize * 4/3)** — i.e. points at **96 DPI**. Verified:
   mask height == FreeType `ascent+descent` at that pixel size (size 24→36, 32→49,
   matches within rounding across sizes 8..76). Width == inked advance.
-- **The portrait wide-transform applies to StaticText masks too**: a mask wider
-  than 256 stores `w-256` (76pt "76:Ag5.2%" → stored 237 = 493-256) and its `by`
-  gets +256, same rule as ProgressBars.
-- **Numbers** keep their own digit-glyph resource (separate from text masks; the
-  ~36 KB region after the text masks). Digit-glyph exact layout still TODO.
+- **The portrait wide-transform applies to StaticText masks too**, with the same
+  multi-band rule as everything else (`k = mask_w // 256`): the mask stores
+  `w - 256*k` and its `by` gets `+256*k`. Verified on GeometryEdges' 853-px
+  `WIDE_STATIC_TEXT` (k=3).
+- **bold/italic** select the matching Liberation Sans face; no entry flag (the
+  weight/slant is baked into the rendered mask). Verified on TextStyles.bin.
+- **Opaque vs transparent background** is **NOT encoded in the widget entry** —
+  an `isTransparent=0` StaticText has byte-identical `[12:64]` to a transparent
+  one (`[15:17]`=color, `[17]`=0xff, no extra flag). The opaque background is
+  painted on-device from `<backgroundColor>` behind the box; from-scratch we emit
+  the same entry either way. (`isTransparent`/`backgroundColor` live in the `.ui`.)
+- **Underline & strikethrough are UI-only NO-OPS.** The editor exposes them but
+  they don't render on-panel, and `TextStylesDateTime_underline_strikeout.bin`
+  confirms **no byte or bit** differs in the StaticText entry (or its mask) versus
+  a plain one — nothing is emitted, so nothing draws.
+- **Numbers** keep their own digit-glyph resource (separate from text masks).
+  **RESOLVED byte-exact** (NumberMatrix.bin, sizes 8..64): a Number's rendered
+  digits are a **glyph-major 8-bpp coverage "digit strip"** — the 12 glyphs
+  `0 1 2 3 4 5 6 7 8 9 . -` stored **consecutively**, each glyph an
+  `advance_width × strip_height` row-major block (NOT a shared raster; NOT
+  `[12:15]` like StaticText). Entry layout:
+    - `[11]` = **hAlign** (0 left / 1 center / 2 right).
+    - `[12:14]` = fontColor RGB565 BE; `[14]=0x00 [15]=0xff [16]=0x00`.
+    - `[17:20]` = **BE24 pointer** to the digit strip (deduped per fontSize).
+    - `[20:22]` = strip_height (BE u16); `[22:42]` = the 10 digit advances (all
+      equal); `[42:44]` = `.` advance; `[44:46]` = `-` advance; rest zero.
+    - `[10]` = the `.ui` box height (NOT strip_height).
+  Advances == FreeType `getlength()` **exactly** at pixel size
+  `round(fontSize*4/3)`; strip_height == FreeType `ascent+descent` (editor within
+  ±1px). **Implemented from-scratch** in `compiler.py` (`render_number_strip` +
+  `number_metric_tail`) — no base blob needed for Numbers.
 - STILL TO NAIL for *byte-exact* AA: per-glyph integer-advance + FreeType hinting
   mode vs the editor's rasteriser (our render is ~4-6px wider over ~8 chars and
   ~0.6 pixel-correlation — same text, not yet identical pixels). Sizes are close
@@ -84,43 +110,61 @@ are encoded, and how color/alpha interact with the mask.
 
 What we learn: the Number `[12:64]` metric tail byte meaning (digit advance,
 dp/sign glyph, alignment), so we can emit numbers at any size from scratch.
+**RESOLVED** — see the Number digit-strip decode under *RESOLVED* above.
+`hAlign` at `[11]`; `isDiv1204` has **no** effect on the widget entry bytes (a
+render-time value-scaling hint, not stored).
 
-**P1c — DateTime.** One `DateTime` per available **format** (date-only,
-time-only, combined; 12/24h if offered) and size. What we learn: the format-code
-byte(s) and its metric tail. (Field id is fixed `0x15`/21 — confirmed.)
+**P1c — DateTime (0x8e).** PARTIALLY decoded (`TextStylesDateTime.bin`):
+- Field id fixed `0x15`/21 (confirmed); `[11]` = **hAlign** — DateTime's
+  **right-align (2) works on-panel** (StaticText's right-align does NOT render).
+- Tail mirrors Number: `[12:14]` color, `[17:20]` BE24 ptr to a glyph strip
+  (digits + `-`, ` `, `:` separators), `[20:...]` strip_h + advances (BE u16).
+- **Format is packed inline in the entry tail** starting at `[45]`, only ~19
+  bytes of room (`[45:64]`): `yyyy-mm-dd hh:nn:ss` → skeleton `"1-2-3 4:5:6"`
+  (digits 1..6 = year/month/day/hour/min/sec field slots; literals verbatim).
+- **CRASH WARNING — a freeform `dateTimeFormat` (not the built-in skeleton) black-
+  screens the panel.** `TextStylesDateTime_badformat.bin` shows the freeform text
+  written straight into `[45:64]`, **overrunning the 19-byte region** (its last
+  byte `[63]` is non-zero / unterminated) — that overflow is what crashes. The
+  compiler therefore only REUSES a base DateTime entry (never synthesises one);
+  if it ever emits DateTime, it must restrict formats to the safe skeleton set and
+  guarantee the skeleton fits `[45:64]` NUL-terminated.
 
 ---
 
-## Priority 2 — GEOMETRY edge cases (transform is solved for the common case)
+## Priority 2 — GEOMETRY (SOLVED byte-exact, incl. all edge cases)
 
-Confirmed byte-exact: narrow widgets and **wide (256<w<512)** ProgressBars that
-wrap one band (`bl_y += 256`, `bl_w -= 256`). Still unverified:
+The transform `ui_to_blob_xy` is now confirmed **byte-exact for every widget
+type and every width** against the freshly-paired BandGeomFlat / BandGeomImage /
+GeometryEdges editor blobs:
 
-- A ProgressBar **exactly 256 px** wide (narrow or wide branch?).
-- One **> 512 px** wide (spans 2 band boundaries — does `bl_y += 512`,
-  `bl_w -= 512`? our rule only subtracts one band).
-- Bars at **x offsets other than 40** (e.g. 0, 120, 250, 300) so the wrap point
-  varies within the band.
-- A widget in the **bottom band** `y ∈ [768, 800)` (32-px-tall last band) — we've
-  only tested up to y≈716.
-- A **tall** widget: `height > 32`, and `height > 255` (is height only byte
-  `[10]`, or is there a high byte we've always seen as 0?).
-- One **static text / number** that is itself > 256 wide (does the wide rule
-  apply to non-bars too, or only ProgressBars?).
-- Confirm `x ∈ [256,480)` band-1 widgets for every type.
+```
+bl_x = (ux mod 256) + 256*(uy//256)
+k    = uw // 256                      # number of 256-band boundaries the width spans
+bl_y = (uy mod 256) + 256*k
+bl_w = uw - 256*k
+```
 
-**NEW open case — per-band vertical offset.** In the SysStatus capture the stored
-band-relative `by` of ProgressBar/Number widgets is **not** the pure
-`ui_to_blob_xy` result: it is shifted up by a per-band amount `(2 - band)*16`
-(band 0 → −32, band 1 → −16, band 2 → 0) for that 480×800 theme, while NeonGrid
-(same resolution, but shorter widgets / no bottom-band image) shows **no** offset.
-The trigger is unclear (leftover `H − 3*256 = 32` distributed across bands? or a
-repack forced by the bottom-band 480×200 image?). Until decoded, the from-scratch
-compiler **copies `[3:11]` geometry for ProgressBar/Number/DateTime from the
-aligned base entry** (StaticText geometry comes from the mask, Image from the
-transform, both verified). So from-scratch currently needs a base whose widget
-layout matches for those field-bound types. Note also byte **`[0x53]` = animation
-frame count** of the largest animated Image (30 in SysStatus, 1 otherwise).
+Verified branches (GeometryEdges): `uw==256` → k=1 (wide branch, bl_w=0);
+`uw=512` → k=2; `uw=600` → k=2 (bl_w=88); StaticText `uw=853` → k=3; `uw<256`
+→ k=0 (identity). x offsets 0/40/120/250, bands 0/1, and a bottom-band widget
+(`y=780`) all match. `[10]` carries only the low byte of the box height.
+
+**CORRECTION — the "per-band vertical offset" was a FALSE ALARM.** It came from
+comparing an **edited** SysStatus `.ui` against an **older, unpaired** blob
+(`tests/fixtures/SysStatus.*` are out of sync — the `.ui` was modified after the
+capture, so its Number/Bar `y` values are 16–32 px off). The **freshly-paired**
+BandGeom/GeometryEdges blobs match the pure `ui_to_blob_xy` result with **ZERO
+offset** for every ProgressBar and Number, in all four bands, with and without a
+bottom-band image. There is **no per-band offset**. The from-scratch compiler now
+computes `[3:11]` geometry for ProgressBar **and Number** with the pure transform
+(no base-copy); only DateTime still reuses a base entry (its glyph strip/format
+skeleton are only partially decoded — see below), and the byte-exact reuse path
+(`render_text=False`) still copies base geometry verbatim to stay bit-identical.
+
+Still only inferred: `> 512`-px multi-band **ProgressBars** (GeometryEdges proves
+the width rule up to 853 px on a StaticText; bars ≤512 are confirmed) and byte
+`[0x53]` = animation frame count of the largest animated Image (30 in SysStatus).
 
 ---
 
@@ -143,9 +187,18 @@ likely to be used in polish (and to brick).
   `<imageDelay>` in the .ui, animation speed likely global / undecoded).
 - **Implemented from-scratch** in `compiler.py` (`render_image_resource`).
 
-**P3b — Image-filled ProgressBar.** A ProgressBar using `<bgImagePath>` /
-`<fgImagePath>` (image fill instead of solid color). How is the image ref stored
-in the `0x8b` entry, and how does fill clip the fg image?
+**P3b — Image-filled ProgressBar.** DECODED (`TextStylesDateTime_img-progress.bin`).
+A ProgressBar with `<bgImagePath>`/`<fgImagePath>` stores, after the 3 RGB565 BE
+colours `[12:18]`, **two image references** as `w(BE16) h(BE16) ptr(BE24)` triples:
+`[18:20]` bg w, `[20:22]` bg h, `[22:25]` bg BE24 ptr; `[25:27]` fg w, `[27:29]`
+fg h, `[29:32]` fg BE24 ptr (raw pixels in the resource area like Image widgets).
+A bar with only a bg image (`<bgImagePath>` set, no fg) stores just the bg triple.
+**The bar SIZE follows the bg image size** (the `w/h/x/y` come from the bg image,
+not the `.ui` box), and **the fill is AUTO-ANIMATED**: the fg image scrolls
+left→right, wrapping/looping — it is **not** driven by the bound field value
+(unlike a solid-colour bar, which fills `value` as a percent 0..100). Frame/scroll
+timing is not in the entry tail (global / undecoded). Implementation is optional;
+a solid-colour bar remains the simple, value-driven choice.
 
 **P3c — ProgressBar `showType`.** We've only seen `showType=0`. Author bars with
 each other `showType` the editor allows (vertical? right-to-left? segmented?),
@@ -174,16 +227,20 @@ and where per-frame delay lives.
 |---|---|
 | descriptor / header | CONFIRMED byte-exact |
 | widget-table framing, type map, field binding (byte[2]=fastSensor) | CONFIRMED |
-| coordinate transform (narrow + wide 256<w<512) | CONFIRMED byte-exact |
-| coordinate transform (w=256, w>512, h>255, bottom band) | UNKNOWN (P2) |
+| coordinate transform (all widths incl. w=256/512/853, x/band, bottom band) | CONFIRMED byte-exact (k=uw//256) |
+| coordinate transform (per-band vertical offset) | FALSE ALARM — no offset exists |
 | ProgressBar color layout; percent-fill 0..100 render | CONFIRMED |
-| StaticText/Number/DateTime color + ptr/flags | CONFIRMED |
-| glyph MASK format + metric tails (from-scratch) | UNKNOWN → reuse base (P1) |
-| Image widget + animation encoding | INFERRED (P3) |
-| image-filled bars, showType variants | UNKNOWN (P3) |
+| StaticText color + ptr; mask format; bold/italic; opaque bg; underline no-op | CONFIRMED |
+| Number(0x92) digit strip + metric tail (from-scratch) | CONFIRMED byte-exact |
+| DateTime(0x8e) align + inline format skeleton; freeform-format crash | PARTIAL → reuse base |
+| Image widget + animation encoding | CONFIRMED (P3) |
+| image-filled ProgressBar (bg/fg image refs, auto-scroll fill) | DECODED; impl optional |
+| ProgressBar showType variants | UNKNOWN (P3) |
 | landscape / orientation matrix | PARTIAL (P4) |
 
-Until P1 is cracked, keep authoring via the editor (or the compiler's
-`render_text=False` reuse path with a base blob). Never flash a `render_text=True`
-/ from-scratch blob without validating it in the editor first, and keep the
+The from-scratch path (`render_text=True`) can now emit StaticText, **Number**,
+and Image widgets without a base blob; only **DateTime** still needs a base (its
+format skeleton is only partially decoded and a wrong format **crashes the
+panel** — see P1c). The `render_text=False` reuse path stays byte-exact. Never
+flash a from-scratch blob without validating it in the editor first, and keep the
 firmware recovery frames handy (`PROTOCOL_NOTES.md` → recovery).

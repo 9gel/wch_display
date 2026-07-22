@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui>
+    <widgetParent type="1" objectName="background">
+        <geometry><x>10</x><y>10</y><width>480</width><height>800</height></geometry>
+        <backgroundType>1</backgroundType><backgroundColor>ff0c0e14</backgroundColor>
+        <backgroundImagePath>./images/bg.jpg</backgroundImagePath><imageDelay>0</imageDelay>
+    </widgetParent>
+    <widget type="3" globalID="1" sameTypeID="1" objectName="b1" parentName="background">
+        <geometry><x>40</x><y>40</y><width>256</width><height>16</height></geometry>
+        <isHide>0</isHide>
+        <style><showType>0</showType><bgColor>ff0e2230</bgColor><fgColor>ff00e5ff</fgColor><frameColor>ff0e2230</frameColor><bgImagePath></bgImagePath><fgImagePath></fgImagePath></style>
+        <sensor><fastSensor>2</fastSensor><sensorTypeName>Usage</sensorTypeName><sensorName>QEMU Virtual version 2.5+</sensorName><readingName></readingName></sensor>
+    </widget>
+    <widget type="3" globalID="2" sameTypeID="2" objectName="b2" parentName="background">
+        <geometry><x>40</x><y>80</y><width>300</width><height>16</height></geometry>
+        <isHide>0</isHide>
+        <style><showType>0</showType><bgColor>ff0e2230</bgColor><fgColor>ff00e5ff</fgColor><frameColor>ff0e2230</frameColor><bgImagePath></bgImagePath><fgImagePath></fgImagePath></style>
+        <sensor><fastSensor>3</fastSensor><sensorTypeName>Usage</sensorTypeName><sensorName>QEMU Virtual version 2.5+</sensorName><readingName></readingName></sensor>
+    </widget>
+    <widget type="3" globalID="3" sameTypeID="3" objectName="b3" parentName="background">
+        <geometry><x>40</x><y>120</y><width>512</width><height>16</height></geometry>
+        <isHide>0</isHide>
+        <style><showType>0</showType><bgColor>ff0e2230</bgColor><fgColor>ff00e5ff</fgColor><frameColor>ff0e2230</frameColor><bgImagePath></bgImagePath><fgImagePath></fgImagePath></style>
+        <sensor><fastSensor>4</fastSensor><sensorTypeName>Usage</sensorTypeName><sensorName>QEMU Virtual version 2.5+</sensorName><readingName></readingName></sensor>
+    </widget>
+    <widget type="3" globalID="4" sameTypeID="4" objectName="b4" parentName="background">
+        <geometry><x>40</x><y>170</y><width>600</width><height>16</height></geometry>
+        <isHide>0</isHide>
+        <style><showType>0</showType><bgColor>ff0e2230</bgColor><fgColor>ff00e5ff</fgColor><frameColor>ff0e2230</frameColor><bgImagePath></bgImagePath><fgImagePath></fgImagePath></style>
+        <sensor><fastSensor>5</fastSensor><sensorTypeName>Usage</sensorTypeName><sensorName>QEMU Virtual version 2.5+</sensorName><readingName></readingName></sensor>
+    </widget>
+    <widget type="3" globalID="5" sameTypeID="5" objectName="b5" parentName="background">
+        <geometry><x>0</x><y>220</y><width>300</width><height>16</height></geometry>
+        <isHide>0</isHide>
+        <style><showType>0</showType><bgColor>ff0e2230</bgColor><fgColor>ff00e5ff</fgColor><frameColor>ff0e2230</frameColor><bgImagePath></bgImagePath><fgImagePath></fgImagePath></style>
+        <sensor><fastSensor>6</fastSensor><sensorTypeName>Usage</sensorTypeName><sensorName>QEMU Virtual version 2.5+</sensorName><readingName></readingName></sensor>
+    </widget>
+    <widget type="3" globalID="6" sameTypeID="6" objectName="b6" parentName="background">
+        <geometry><x>120</x><y>260</y><width>300</width><height>16</height></geometry>
+        <isHide>0</isHide>
+        <style><showType>0</showType><bgColor>ff0e2230</bgColor><fgColor>ff00e5ff</fgColor><frameColor>ff0e2230</frameColor><bgImagePath></bgImagePath><fgImagePath></fgImagePath></style>
+        <sensor><fastSensor>7</fastSensor><sensorTypeName>Usage</sensorTypeName><sensorName>QEMU Virtual version 2.5+</sensorName><readingName></readingName></sensor>
+    </widget>
+    <widget type="3" globalID="7" sameTypeID="7" objectName="b7" parentName="background">
+        <geometry><x>250</x><y>300</y><width>300</width><height>16</height></geometry>
+        <isHide>0</isHide>
+        <style><showType>0</showType><bgColor>ff0e2230</bgColor><fgColor>ff00e5ff</fgColor><frameColor>ff0e2230</frameColor><bgImagePath></bgImagePath><fgImagePath></fgImagePath></style>
+        <sensor><fastSensor>8</fastSensor><sensorTypeName>Usage</sensorTypeName><sensorName>QEMU Virtual version 2.5+</sensorName><readingName></readingName></sensor>
+    </widget>
+    <widget type="3" globalID="8" sameTypeID="8" objectName="b8" parentName="background">
+        <geometry><x>40</x><y>360</y><width>300</width><height>60</height></geometry>
+        <isHide>0</isHide>
+        <style><showType>0</showType><bgColor>ff0e2230</bgColor><fgColor>ff00e5ff</fgColor><frameColor>ff0e2230</frameColor><bgImagePath></bgImagePath><fgImagePath></fgImagePath></style>
+        <sensor><fastSensor>9</fastSensor><sensorTypeName>Usage</sensorTypeName><sensorName>QEMU Virtual version 2.5+</sensorName><readingName></readingName></sensor>
+    </widget>
+    <widget type="2" globalID="9" sameTypeID="9" objectName="t9" parentName="background">
+        <geometry><x>40</x><y>440</y><width>853</width><height>38</height></geometry>
+        <isHide>0</isHide>
+        <font><text>WIDE_STATIC_TEXT_OVER_256_PIXELS_LONG_abcdef</text><fontName>Arial</fontName><fontColor>ff00e5ff</fontColor><fontSize>24</fontSize><bold>0</bold><italic>0</italic></font>
+        <characterSet>0</characterSet><isTransparent>1</isTransparent><isAutoLineBreak>0</isAutoLineBreak>
+        <backgroundColor>ffffffff</backgroundColor><hAlign>0</hAlign><vAlign>0</vAlign><isEnable>1</isEnable>
+    </widget>
+    <widget type="3" globalID="10" sameTypeID="10" objectName="b10" parentName="background">
+        <geometry><x>40</x><y>780</y><width>300</width><height>16</height></geometry>
+        <isHide>0</isHide>
+        <style><showType>0</showType><bgColor>ff0e2230</bgColor><fgColor>ff00e5ff</fgColor><frameColor>ff0e2230</frameColor><bgImagePath></bgImagePath><fgImagePath></fgImagePath></style>
+        <sensor><fastSensor>10</fastSensor><sensorTypeName>Usage</sensorTypeName><sensorName>QEMU Virtual version 2.5+</sensorName><readingName></readingName></sensor>
+    </widget>
+    <widget type="5" globalID="11" sameTypeID="11" objectName="n11" parentName="background">
+        <geometry><x>40</x><y>700</y><width>108</width><height>62</height></geometry>
+        <isHide>0</isHide>
+        <font><text>12.3</text><fontName>Arial</fontName><fontColor>ffffe600</fontColor><fontSize>40</fontSize><bold>0</bold><italic>0</italic></font>
+        <characterSet>0</characterSet><isTransparent>1</isTransparent><isAutoLineBreak>0</isAutoLineBreak>
+        <backgroundColor>ffffffff</backgroundColor><hAlign>0</hAlign><vAlign>0</vAlign><isEnable>1</isEnable>
+        <sensor><fastSensor>11</fastSensor><sensorTypeName>Usage</sensorTypeName><sensorName>QEMU Virtual version 2.5+</sensorName><readingName></readingName><isDiv1204>0</isDiv1204></sensor>
+    </widget>
+</ui>
