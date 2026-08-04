@@ -69,7 +69,7 @@ def main(argv=None):
     if cmd == "flash":
         from .panel import Panel
         blob = open(args.path, "rb").read()
-        p = Panel(port=cfg.port)
+        p = Panel.connect(port=cfg.port)   # retry-open: the panel may be asleep (ENXIO)
         print("ack:", p.send_theme(blob)); p.close()
         return 0
 

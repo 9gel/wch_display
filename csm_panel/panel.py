@@ -36,6 +36,23 @@ class Panel:
         self.ser.reset_input_buffer()
         self.ser.reset_output_buffer()
 
+    @classmethod
+    def connect(cls, port=PORT, retries=30, delay=1.0):
+        """Open the panel, retrying transient open errors. The panel sleeps
+        after ~30 s without a 0x66 push and open() then returns ENXIO ("No such
+        device or address") until it wakes / re-enumerates — not a brick. This
+        mirrors the streaming service's retry-open so the flash path doesn't
+        fail outright on a sleeping panel (the single-open flash was the cause
+        of "Flash failed, could not open port /dev/ttyACM0")."""
+        last = None
+        for _ in range(max(1, retries)):
+            try:
+                return cls(port=port)
+            except Exception as e:  # ENXIO / EACCES-during-re-enum / not-yet-present
+                last = e
+                time.sleep(delay)
+        raise last
+
     def close(self):
         try:
             self.ser.close()
