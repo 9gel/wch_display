@@ -11,6 +11,7 @@ THEME_MAGIC = 918          # u32 LE at blob[0]
 CHUNK = 4096               # payload bytes per 'theme' USB frame
 HEADER = 64                # command header size
 THEME_MAX = 4 * 1024 * 1024  # panel rejects theme blobs larger than 4 MiB
+FLASH_BATCH = 256          # panel acks 0x43 'C' after every 256 theme blocks (flow control)
 
 
 def crc16_modbus(data: bytes) -> int:
@@ -65,6 +66,17 @@ class Panel:
     def _write(self, data: bytes):
         self.ser.write(data)
 
+    def _read_ack(self, timeout: float = 30.0) -> bytes:
+        """Read one ack byte, waiting up to `timeout` s. The panel emits 0x43
+        'C' after every FLASH_BATCH theme blocks and once more after 'end'; a
+        256-block batch can take ~16 s to NAND-write, so the wait is generous."""
+        old = self.ser.timeout
+        self.ser.timeout = timeout
+        try:
+            return self.ser.read(1)
+        finally:
+            self.ser.timeout = old
+
     # --- commands ----------------------------------------------------------
     def model(self) -> str:
         """Query the panel model string."""
@@ -91,10 +103,24 @@ class Panel:
         """Reboot the MCU (jump to app after a firmware update / re-validate)."""
         self.send_command(b"reset")
 
-    def send_theme(self, blob: bytes, ack: bool = True) -> bytes:
-        """Upload a theme blob. Each frame header carries meta =
-        content_length (BE24) + CRC16-MODBUS(content) (BE16); the blob is
-        zero-padded to a whole number of 4096-byte chunks for transport.
+    def send_theme(self, blob: bytes, ack: bool = True,
+                   batch: int = FLASH_BATCH, frame_delay: float = 0.0) -> bytes:
+        """Upload a theme blob with the panel's flow-control handshake.
+
+        Framing: each frame = 64-byte header (meta = content_length BE32 +
+        CRC16-MODBUS(content) BE16) + a 4096-byte chunk; the blob is zero-padded
+        to a whole number of chunks.
+
+        FLOW CONTROL (matches the vendor Windows app; verified against a USB
+        capture, theme_Cybercity.pcapng): the panel NAND-writes each 4 KB block
+        as it arrives (~64 ms/block) and emits a 0x43 'C' ack after every
+        `batch` (256) blocks, then once more after 'end'. The host must pace to
+        that rate and wait for each periodic ack before continuing — blasting
+        all frames back-to-back overruns the writer and flashes a corrupt /
+        "Empty Theme" blob (intermittently: sometimes renders, sometimes no
+        live updates, sometimes empty). We flush per frame (USB backpressure)
+        and read each 256-block ack; if a panel still overruns, pass a small
+        `frame_delay` (e.g. 0.06) for explicit per-frame pacing.
         """
         content_len = len(blob)
         if content_len > THEME_MAX:
@@ -111,11 +137,22 @@ class Panel:
         block = 0
         for off in range(0, len(padded), CHUNK):
             self._write(self._cmd_header(b"theme", block, meta) + padded[off:off + CHUNK])
+            self.ser.flush()                      # push out + take USB backpressure
             block += 1
+            if frame_delay:
+                time.sleep(frame_delay)
+            # flow control: the panel acks 'C' after every `batch` blocks — wait
+            # for it before sending more, or the NAND writer overruns.
+            if batch and block % batch == 0:
+                a = self._read_ack()
+                if a[:1] != b"C":
+                    raise IOError(
+                        f"theme flash: expected flow-control ack b'C' after block "
+                        f"{block - 1}, got {a!r} — panel likely overran/dropped frames")
         self._write(self._cmd_header(b"end", 0, meta))
         self.ser.flush()
         if ack:
-            return self.ser.read(1)
+            return self._read_ack()
         return b""
 
     # --- live data push (0x66) : updates widgets WITHOUT resetting ----------

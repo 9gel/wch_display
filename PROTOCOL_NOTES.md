@@ -84,6 +84,19 @@ lowers quality to a frame-size budget.
 
 ## No-reset live updates (the widget path)
 
+**Theme-flash flow control (app mode).** Unlike the boot-mode `update` flow
+(which acks once after `end` — see recovery section), the app-mode `theme`
+upload is **paced with per-batch flow control**: the panel NAND-writes each 4 KB
+block as it arrives (~64 ms/block ≈ 62 KiB/s) and emits a `C` (0x43) ack **after
+every 256 blocks**, then once more after `end`. The host must wait for each
+periodic ack before sending more; blasting all frames back-to-back overruns the
+writer and flashes a corrupt / **"Empty Theme"** blob (intermittently: sometimes
+renders, sometimes no live updates, sometimes empty). Verified against the vendor
+Windows app in `theme_Cybercity.pcapng` (acks after blocks 255/511/767, ~64 ms
+between frames). Implemented in `Panel.send_theme` (flush per frame + read the
+256-block acks). The blob itself is byte-for-byte equivalent to the vendor's — the
+difference was purely the flash transport, not the generator.
+
 A `theme` flash **re-enumerates/reboots** the panel (writes NAND to apply), so it
 can't be done frequently. The vendor's live path avoids this: flash a *widget*
 theme ONCE, then stream `0x66` value frames — they update on-device widgets
