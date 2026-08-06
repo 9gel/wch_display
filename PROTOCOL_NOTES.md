@@ -95,7 +95,37 @@ renders, sometimes no live updates, sometimes empty). Verified against the vendo
 Windows app in `theme_Cybercity.pcapng` (acks after blocks 255/511/767, ~64 ms
 between frames). Implemented in `Panel.send_theme` (flush per frame + read the
 256-block acks). The blob itself is byte-for-byte equivalent to the vendor's — the
-difference was purely the flash transport, not the generator.
+difference was purely the flash transport, not the generator. NB the NAND write is
+still **intermittently flaky** even with correct flow control — a flash can ack
+`C` yet render **"Empty Theme"** (corrupt); the only fix is to re-flash.
+
+**CDC-ACM re-enumeration wedge (Linux flashing gotcha).** A theme flash reboots
+the panel, so it re-enumerates on USB — and on Linux the `cdc_acm` driver
+frequently re-binds the panel's interface **without creating a `ttyACM`**.
+Symptoms: `/dev/ttyACM0` lingers as a stale node but `/sys/class/tty/ttyACM0` is
+gone and `.../1-7:1.0/tty/` is empty, so `open()` returns **ENXIO** (errno 6, "No
+such device or address"). The USB device is otherwise fine (enumerated, `lsusb`
+shows it, `power/runtime_status=active`); retrying `open()` does NOT help because
+no tty exists. Recover by forcing a clean re-enumeration — re-authorize the device
+as root: `echo 0 > /sys/bus/usb/devices/<port>/authorized; sleep 2; echo 1 >
+/sys/bus/usb/devices/<port>/authorized` (match the panel by VID:PID `1a86:8040`;
+the port path is stable across re-enumeration, e.g. `1-7`). `usbreset` can't reach
+it (usbfs `/dev/bus/usb` isn't populated). This ALSO trips on a plain service
+restart (port close→reopen), not only on flash. It is DISTINCT from the panel
+**sleeping** (also ENXIO, but retry-open recovers once it wakes on the next
+`0x66`). Windows doesn't hit this — its CDC driver handles the re-enumeration.
+
+**Isolating a `0x66`-update crash.** A malformed / unsupported widget config can
+render statically yet **crash the panel's live-update pass**, so NO bound widget
+updates — looks like "no stats" while the theme itself renders fine. Isolate the
+offending widget group by pushing a **partial `0x66` frame that omits a suspect
+field group**: if the remaining fields update, the omitted group's widgets are
+what crash the pass. (Observed: a numbers-only frame updated the Numbers, while a
+full frame that also carried the ProgressBar fields updated nothing → a bar widget
+crashed the pass.) Then bisect the theme change commit-by-commit against a
+known-good blob — byte-diffing widget entries is unreliable (several "obvious"
+differences — `bl_w`, the `[18:20]` bar scale, the settings byte — were red
+herrings; the git bisect found it).
 
 A `theme` flash **re-enumerates/reboots** the panel (writes NAND to apply), so it
 can't be done frequently. The vendor's live path avoids this: flash a *widget*
